@@ -1,0 +1,28 @@
+using FEngine
+using Test
+
+@testset "FEngine" begin
+    T = Float32
+
+    noise = Noise{T}(3.0)
+    source = MonochromaticSource{T}(1.0e+9, (7.5, 0), (0.0, 0.0), 0.0, 0.0)
+
+    dishgrid = DishGrid{T}(6.3, 8.5) # CHORD
+    dishes = Dish[]
+    for y in 0:9, x in 0:6
+        if x+7*y < 64
+            push!(dishes, Dish(x, y))
+        end
+    end
+
+    adc_frequency = 3.2e+9     # [Hz]
+
+    adc = ADC{T}(0, inv(adc_frequency))
+    pfb = PFB(4, 16384, collect(1536:7679)) # 300 MHz ... 1500 MHz
+
+    ntimes = 64
+
+    filename = tempname(; suffix=".h5")
+
+    fengine(filename, noise, [source], dishgrid, dishes, adc, pfb, ntimes)
+end
