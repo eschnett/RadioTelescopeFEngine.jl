@@ -2,7 +2,7 @@ using FEngine
 
 filename = "voltage_pathfinder.h5"
 
-T = Float32
+T = Float64
 
 noise = Noise{T}(3.0)
 source = MonochromaticSource{T}(1.0e+9, (7.5, 0), (0.0, 0.0), 0.0, 0.0)
@@ -23,6 +23,6 @@ pfb = PFB(4, 16384, collect(1536:7679)) # 300 MHz ... 1500 MHz
 num_times = 8192                # buffer size
 ntimes = 1 * num_times
 
-fengine(filename, noise, [source], dishgrid, dishes, adc, pfb, ntimes)
+fengine(filename, noise, [source], FRBSource{T}[], dishgrid, dishes, adc, pfb, ntimes)
 
 # time h5repack --layout='voltage:CHUNK=8192' --filter='voltage:GZIP=9' voltage_pathfinder.h5 voltage_pathfinder_compressed.h5

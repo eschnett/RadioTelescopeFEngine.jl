@@ -42,19 +42,25 @@ end
 ################################################################################
 # Sources
 
-# We represent the source as complex - valued function of time.The two
-# complex components represent the two polarisations.
-
 # The product f₀ * t can become too large to be represented accurately
-# via single precision. We need to use double precision.
+# via single precision. We either need to use double precision, or be
+# very careful.
 
 export AbstractSource
 abstract type AbstractSource{T} end
+
+########################################
 
 export Noise
 struct Noise{T} <: AbstractSource{T}
     A::T
 end
+
+function calc_field(noise::Noise{T}, ::Int, ::T) where {T<:Real}
+    return (noise.A * randn(T))::T
+end
+
+########################################
 
 export MonochromaticSource
 struct MonochromaticSource{T} <: AbstractSource{T}
@@ -65,12 +71,131 @@ struct MonochromaticSource{T} <: AbstractSource{T}
     angle_y::T                  # [rad]
 end
 
-function calc_field(noise::Noise{T}, ::Int, ::T) where {T<:Real}
-    return (noise.A * randn(T))::T
-end
-
 function calc_field(source::MonochromaticSource{T}, polr::Int, t::T) where {T<:Real}
     return (source.A[polr] * sinpi(2 * source.f * t + source.ϕ[polr] / π))::T
+end
+
+########################################
+
+export FRBSource
+struct FRBSource{T}
+    # Spectrum
+    t₀::T                       # [s]
+    t₁::T                       # [s]
+    f₀::T                       # [1/s]
+    f₁::T                       # [1/s]
+    # Scale
+    adc_frequency::T            # [1/s]
+    pfb_nsamples::Int
+    scale::Int
+    # Time envelope (Gaussian)
+    tc::T                       # [s]
+    tw::T                       # [s]
+    # Frequency envelope (bandpass)
+    floc::T                     # [1/s]
+    flow::T                     # [1/s]
+    fhic::T                     # [1/s]
+    fhiw::T                     # [1/s]
+    # Amplitude and phase
+    A::NTuple{2,T}              # both polarizations
+    ϕ::NTuple{2,T}              # [rad], both polarizations
+    # Sky location
+    angle_x::T                  # [rad]
+    angle_y::T                  # [rad]
+
+    # frb::Vector{Complex{T}}
+end
+
+gauss(x, W) = exp(-(x / W)^2 / 2)
+logistic(x) = 1 / (1 + exp(-x))
+lopass(x, x₀, Δx) = logistic((x₀ - x) / Δx)
+hipass(x, x₀, Δx) = logistic((x - x₀) / Δx)
+
+function time_delay(frb_source::FRBSource{T}, f::T) where {T<:Real}
+    f == 0 && return T(0)
+
+    t₀ = frb_source.t₀
+    t₁ = frb_source.t₁
+    f₀ = frb_source.f₀
+    f₁ = frb_source.f₁
+
+    t = (t₀ - t₁) / (1 / f₀^2 - 1 / f₁^2)
+    ts = (t₁ / f₀^2 - t₀ / f₁^2) / (1 / f₀^2 - 1 / f₁^2)
+
+    dt = ts + t / f^2
+
+    return dt::T
+end
+
+function time_envelope(frb_source::FRBSource{T}, t::T) where {T<:Real}
+    tc = frb_source.tc
+    tw = frb_source.tw
+    return gauss(t - tc, tw)
+end
+
+# Frequency envelope
+function freq_envelope(frb_source::FRBSource{T}, f::T) where {T<:Real}
+    floc = frb_source.floc
+    flow = frb_source.flow
+    fhic = frb_source.fhic
+    fhiw = frb_source.fhiw
+    return hipass(f, floc, flow) * lopass(f, fhic, fhiw)
+end
+
+function make_frb_source(frb_source::FRBSource{T}, polr::Int, sample0::Int, nsamples::Int) where {T<:Real}
+    adcfreq = frb_source.adc_frequency
+    pfb_nsamples = frb_source.pfb_nsamples
+    Δf::T = adcfreq / pfb_nsamples # 195.3125 kHz for CHORD
+    Δt::T = 1 / Δf                 # 5.12 us for CHORD
+
+    # We upchannelize and thus need to have a higher frequency resolution
+    # scale = 64
+    scale = frb_source.scale
+    ntimes1 = ceil(Int, (frb_source.t₁ + 10 * frb_source.tw) / Δt)
+    ntimes1 = cld(ntimes1, scale) * scale
+    @assert ntimes1 % scale == 0
+    ntimes = ntimes1 ÷ scale
+    @assert pfb_nsamples % 2 == 0
+    nfreqs = pfb_nsamples ÷ 2 * scale + 1
+
+    A::T = frb_source.A[polr]
+    ϕ::T = frb_source.ϕ[polr]
+    F::T = adcfreq / 2          # 1600 MHz for CHORD
+    t::T = ntimes1 * Δt         # 41.94304 ms for CHORD
+
+    phystime(time::Integer) = time * t / ntimes
+    physfreq(freq::Integer) = freq * F / nfreqs
+
+    # Create FRB
+    frb = Array{Complex{T}}(undef, nfreqs, ntimes)
+    # @showprogress desc = "FRB" dt = 1 @threads for freq in 1:nfreqs
+    for freq in 1:nfreqs
+        f = physfreq(freq - 1)
+        fenv = freq_envelope(frb_source, f)
+        dt = time_delay(frb_source, f)
+        for time in 1:ntimes
+            t = phystime(time - 1)
+            t′ = t - dt
+            tenv = time_envelope(frb_source, t′)
+            frb[freq, time] = tenv * fenv * A * randn(Complex{T})
+        end
+    end
+
+    # Convert into time stream
+    samples = reshape(irfft(frb, 2 * (nfreqs - 1), 1), :)
+
+    # Append zeros if necessary
+    samples = @view samples[(1 + sample0):end]
+    if length(samples) < nsamples
+        old_samples = samples
+        samples = Array{Complex{T}}(undef, nsamples)
+        samples[1:length(old_samples)] .= old_samples
+        samples[length(old_samples) + 1:end] .= 0
+    elseif length(samples) > nsamples
+        samples = @view samples[1:nsamples]
+    end
+
+    return samples::AbstractVector{T}
 end
 
 ################################################################################
@@ -111,6 +236,8 @@ end
 function adc_sample(
     noise::Noise{T},
     sources::Vector{MonochromaticSource{T}},
+    # frb_sources::Vector{FRBSource{T}},
+    frb_samples::Vector{T},
     dishgrid::DishGrid{T},
     dish::Dish,
     polr::Int,
@@ -126,7 +253,7 @@ function adc_sample(
     for sample in 1:nsamples
         t = adc.t₀ + (sample0 + sample - 1) * adc.Δt
 
-        E = zero(Float32)
+        E = zero(T)
 
         E += calc_field(noise, polr, t)
 
@@ -136,6 +263,14 @@ function adc_sample(
         end
 
         data[sample] = E
+    end
+
+    # for frb_source in 1:length(frb_sources)
+    #     # NOTE: No dish delay yet!
+    #     samples = make_frb_source(frb_sources[frb_source], polr, sample0, nsamples)
+    # end
+    if !isempty(frb_samples)
+        data .+= frb_samples
     end
 
     return ADCFrame(t₀, Δt, data)
@@ -336,6 +471,7 @@ function fengine(
     filename::AbstractString,
     noise::Noise{T},
     sources::Vector{MonochromaticSource{T}},
+    frb_sources::Vector{FRBSource{T}},
     dishgrid::DishGrid{T},
     dishes::Vector{Dish},
     adc::ADC{T},
@@ -349,13 +485,23 @@ function fengine(
     nfreqs = length(pfb.frequency_channels)
     sample0 = 0
     nsamples = (ntimes + pfb.ntaps - 1) * pfb.nsamples
-    println("   ndishes: $ndishes, nfreqs: $nfreqs, ntimes: $ntimes")
+    println("    ndishes: $ndishes, nfreqs: $nfreqs, ntimes: $ntimes")
+
+    if !isempty(frb_sources)
+        println("Simulating FRBs...")
+        frb_samples = [zeros(T, nsamples), zeros(T, nsamples)]
+        for frb_source in frb_sources, polr in 1:npolrs
+            frb_samples[polr] .+= make_frb_source(frb_source, polr, sample0, nsamples)
+        end
+    else
+        frb_samples = [zeros(T, 0), zeros(T, 0)]
+    end
 
     println("Simulating F-Engine...")
     data = Array{Int4x2}(undef, nfreqs, ntimes, ndishes, npolrs)
     @showprogress desc = "F-Engine" dt = 1 @threads for dish in 1:ndishes
         for polr in 1:npolrs
-            adcframe = adc_sample(noise, sources, dishgrid, dishes[dish], polr, adc, sample0, nsamples)
+            adcframe = adc_sample(noise, sources, frb_samples[polr], dishgrid, dishes[dish], polr, adc, sample0, nsamples)
             fframe = channelize(pfb, adcframe)
             iframe = quantize(fframe)
             data[:, :, dish, polr] .= iframe.data

@@ -1,9 +1,7 @@
 using FEngine
 using Test
 
-@testset "FEngine" begin
-    T = Float32
-
+@testset "FEngine T=$T" for T in [Float32, Float64]
     noise = Noise{T}(3.0)
     source = MonochromaticSource{T}(1.0e+9, (7.5, 0), (0.0, 0.0), 0.0, 0.0)
 
@@ -24,5 +22,5 @@ using Test
 
     filename = tempname(; suffix=".h5")
 
-    fengine(filename, noise, [source], dishgrid, dishes, adc, pfb, ntimes)
+    fengine(filename, noise, [source], FRBSource{T}[], dishgrid, dishes, adc, pfb, ntimes)
 end

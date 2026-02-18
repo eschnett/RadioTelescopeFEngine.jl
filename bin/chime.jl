@@ -2,7 +2,7 @@ using FEngine
 
 filename = "voltage_chime.h5"
 
-T = Float32
+T = Float64
 
 noise = Noise{T}(3.0)
 source = MonochromaticSource{T}(1.0e+9, (7.5, 0), (0.0, 0.0), 0.0, 0.0)
@@ -16,11 +16,11 @@ end
 adc_frequency = 1.6e+9     # [Hz]
 
 adc = ADC{T}(0, inv(adc_frequency))
-pfb = PFB(4, 4096, collect(1024:2047)) # 300 MHz ... 800 MHz
+pfb = PFB(4, 4096, collect(1024:2047)) # 400 MHz ... 800 MHz
 
 num_times = 4096                # buffer size
 ntimes = 1 * num_times
 
-fengine(filename, noise, [source], dishgrid, dishes, adc, pfb, ntimes)
+fengine(filename, noise, [source], FRBSource{T}[], dishgrid, dishes, adc, pfb, ntimes)
 
 # time h5repack --layout='voltage:CHUNK=4096x1x2x1024' --filter='voltage:GZIP=9' voltage_chime.h5 voltage_chime_compressed.h5
