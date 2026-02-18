@@ -44,7 +44,6 @@ for y in 0:9, x in 0:6
     end
 end
 
-num_times = 8192                # buffer size
-ntimes = 1 * num_times
+ntimes = 10 * 8192
 
 fengine(filename, noise, MonochromaticSource{T}[], [frb_source], dishgrid, dishes, adc, pfb, ntimes)
