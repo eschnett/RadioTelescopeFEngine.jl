@@ -190,7 +190,7 @@ function make_frb_source(frb_source::FRBSource{T}, polr::Int, sample0::Int, nsam
         old_samples = samples
         samples = Array{Complex{T}}(undef, nsamples)
         samples[1:length(old_samples)] .= old_samples
-        samples[length(old_samples) + 1:end] .= 0
+        samples[(length(old_samples) + 1):end] .= 0
     elseif length(samples) > nsamples
         samples = @view samples[1:nsamples]
     end
@@ -228,12 +228,11 @@ struct ADC{T}
 end
 
 struct ADCFrame{T}
-    t₀::T                       # [s]
-    Δt::T                       # [s]
     data::Vector{T}             # [sample]
 end
 
-function adc_sample(
+function adc_sample!(
+    adcframe::ADCFrame{T},
     noise::Noise{T},
     sources::Vector{MonochromaticSource{T}},
     # frb_sources::Vector{FRBSource{T}},
@@ -249,7 +248,8 @@ function adc_sample(
     Δt = adc.Δt
     nsources = length(sources)
 
-    data = Array{T}(undef, nsamples)
+    data = adcframe.data
+    @assert length(data) == nsamples
     for sample in 1:nsamples
         t = adc.t₀ + (sample0 + sample - 1) * adc.Δt
 
@@ -273,7 +273,7 @@ function adc_sample(
         data .+= frb_samples
     end
 
-    return ADCFrame(t₀, Δt, data)
+    return adcframe
 end
 
 ################################################################################
@@ -296,12 +296,14 @@ struct PFB
     end
 end
 
+function pfb_adc(adc::ADC{T}, pfb::PFB) where {T<:Real}
+    Δt = adc.Δt * pfb.nsamples
+    t₀ = adc.t₀ + pfb.ntaps * Δt / 2
+    return ADC{T}(t₀, Δt)
+end
+
 struct FFrame{T}
-    t₀::T
-    Δt::T
-    Δf::T
-    frequency_channels::Vector{Int}
-    data::Array{Complex{T},2}   # [freq, time]
+    data::Array{Complex{T},2}   # [channel, time]
 end
 
 """
@@ -364,21 +366,17 @@ function channelize(data::AbstractVector{T}, ntaps::Int, nsamples::Int) where {T
     return output[begin:ntaps:end, :]
 end
 
-function channelize(pfb::PFB, adcframe::ADCFrame{T}) where {T<:Real}
+function channelize!(fframe::FFrame{T}, adc::ADC, pfb::PFB, adcframe::ADCFrame{T}) where {T<:Real}
     ntaps = pfb.ntaps
     nsamples = pfb.nsamples
     frequency_channels = pfb.frequency_channels
     @assert ntaps > 0
     @assert nsamples > 0
 
-    t₀ = adcframe.t₀
-    Δt = adcframe.Δt
+    t₀ = adc.t₀
+    Δt = adc.Δt
     ntimes = length(adcframe.data)
     @assert ntimes % nsamples == 0
-
-    Δt′ = Δt * nsamples
-    t₀′ = t₀ - Δt / 2 + ntaps * Δt′ / 2
-    Δf′ = 1 / Δt′
 
     ntimes′ = max(0, ntimes ÷ nsamples - pfb.ntaps + 1)
 
@@ -388,7 +386,9 @@ function channelize(pfb::PFB, adcframe::ADCFrame{T}) where {T<:Real}
     outdata = Array{Complex{T}}(undef, ntaps * nsamples ÷ 2 + 1)
     FFT = plan_rfft(indata, 1)
 
-    fdata = Array{Complex{T}}(undef, length(frequency_channels), ntimes′)
+    fdata = fframe.data
+    @assert size(fdata) == (length(frequency_channels), ntimes′)
+    # fdata = Array{Complex{T}}(undef, length(frequency_channels), ntimes′)
     for time′ in 1:ntimes′
         time0 = (time′ - 1) * nsamples + 1
         time1 = time0 + ntaps * nsamples - 1
@@ -409,21 +409,17 @@ function channelize(pfb::PFB, adcframe::ADCFrame{T}) where {T<:Real}
     end
     @assert all(isfinite, fdata)
 
-    return FFrame{T}(t₀′, Δt′, Δf′, frequency_channels, fdata)
+    return fframe
 end
 
 ################################################################################
 # F-engine: quantize
 
 struct IFrame{T}
-    t₀::T
-    Δt::T
-    Δf::T
-    frequency_channels::Vector{Int}
-    data::Array{Int4x2,2}   # [freq, time]
+    data::Array{Int4x2,2}   # [channel, time]
 end
 
-function quantize(fframe::FFrame{T}) where {T<:Real}
+function quantize!(iframe::IFrame{T}, fframe::FFrame{T}) where {T<:Real}
     fdata = fframe.data
     nfreqs, ntimes = size(fdata)
 
@@ -444,7 +440,9 @@ function quantize(fframe::FFrame{T}) where {T<:Real}
     # counts = zeros(Int, 15)
 
     # idata = round.(Int8, clamp.(scale * fdata, T(-7), T(+7)))
-    idata = Array{Int4x2}(undef, nfreqs, ntimes)
+    idata = iframe.data
+    @assert size(idata) == (nfreqs, ntimes)
+    # idata = Array{Int4x2}(undef, nfreqs, ntimes)
     for time in 1:ntimes, freq in 1:nfreqs
         x = fdata[freq, time]
         i = round(Int8, clamp(scale * x, T(-7), T(+7)))
@@ -461,7 +459,42 @@ function quantize(fframe::FFrame{T}) where {T<:Real}
     #     stats; column_labels=["value", "count", "percent"], table_format=TextTableFormat(; borders=text_table_borders__borderless)
     # )
 
-    return IFrame{T}(fframe.t₀, fframe.Δt, fframe.Δf, fframe.frequency_channels, idata)
+    return iframe
+end
+
+################################################################################
+# F-engine: corner turn
+
+# Transpose the first two dimensions, the third is a spectator
+function tiled_transpose!(A::AbstractArray{T,3}, B::AbstractArray{T,3}) where {T}
+    ni, nj, nk = size(A)
+    @assert size(B) == (nj, ni, nk)
+
+    @assert sizeof(T) == 1
+    # Choose large (outer) tiles of about 1 MB
+    di2, dj2 = 1024, 1024
+    # Choose small (inner) tiles of about 16 kB
+    di1, dj1 = 128, 128
+
+    # Loop over tiles (multi-threaded)
+    cld_ni_di2 = cld(ni, di2)
+    cld_nj_dj2 = cld(nj, dj2)
+    @showprogress desc = "Corner turn" dt = 1 @threads for idx in 1:(nk * cld_nj_dj2 * cld_ni_di2)
+        idx2, i2 = fldmod1(idx, cld_ni_di2)
+        k, j2 = fldmod1(idx2, cld_nj_dj2)
+        i2 *= di2
+        j2 *= dj2
+
+        # Traverse large (outer) tiles
+        for j1 in j2:min(nj, j2 + dj2 - 1), i1 in i2:min(ni, i2 + di2 - 1)
+            # Traverse small (inner) tiles
+            for j in j1:min(nj, j1 + dj1 - 1), i in i1:min(ni, i1 + di1 - 1)
+                A[i, j, k] = B[j, i, k]
+            end
+        end
+    end
+
+    return A
 end
 
 ################################################################################
@@ -498,12 +531,25 @@ function fengine(
     end
 
     println("Simulating F-Engine...")
+    # Preallocate work arrays
+    nthreads() = Threads.nthreads(:default)
+    threadid() = Threads.threadid() - Threads.nthreads(:interactive)
+    adcframes = [ADCFrame{T}(Array{T}(undef, nsamples)) for thread in 1:nthreads()]
+    fframes = [FFrame{T}(Array{Complex{T}}(undef, nfreqs, ntimes)) for thread in 1:nthreads()]
+    iframes = [IFrame{T}(Array{Int4x2}(undef, nfreqs, ntimes)) for thread in 1:nthreads()]
     data = Array{Int4x2}(undef, nfreqs, ntimes, ndishes, npolrs)
     @showprogress desc = "F-Engine" dt = 1 @threads for dish in 1:ndishes
         for polr in 1:npolrs
-            adcframe = adc_sample(noise, sources, frb_samples[polr], dishgrid, dishes[dish], polr, adc, sample0, nsamples)
-            fframe = channelize(pfb, adcframe)
-            iframe = quantize(fframe)
+            # adcframe = ADCFrame{T}(Array{T}(undef, nsamples))
+            # fframe = FFrame{T}(Array{Complex{T}}(undef, nfreqs, ntimes))
+            # iframe = IFrame{T}(Array{Int4x2}(undef, nfreqs, ntimes))
+            adcframe = adcframes[threadid()]
+            fframe = fframes[threadid()]
+            iframe = iframes[threadid()]
+
+            adc_sample!(adcframe, noise, sources, frb_samples[polr], dishgrid, dishes[dish], polr, adc, sample0, nsamples)
+            channelize!(fframe, adc, pfb, adcframe)
+            quantize!(iframe, fframe)
             data[:, :, dish, polr] .= iframe.data
         end
     end
@@ -514,7 +560,10 @@ function fengine(
     # Old index order: (freq, time, dish, polr)
     # New index order: (dish, polr, time, freq)
     println("Corner turn...")
-    xdata = Array(permutedims(data, (3, 4, 2, 1)))
+    tdata = Array{Int4x2}(undef, ntimes, nfreqs, ndishes, npolrs)
+    tiled_transpose!(reshape(tdata, (ntimes, nfreqs, :)), reshape(data, (nfreqs, ntimes, :)))
+    xdata = Array{Int4x2}(undef, ndishes, npolrs, ntimes, nfreqs)
+    tiled_transpose!(reshape(xdata, (ndishes * npolrs, ntimes * nfreqs, 1)), reshape(tdata, (ntimes * nfreqs, ndishes * npolrs, 1)))
 
     # Output
     println("Writing to file...")
