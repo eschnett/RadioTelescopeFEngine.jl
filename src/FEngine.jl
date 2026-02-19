@@ -188,7 +188,7 @@ function make_frb_source(frb_source::FRBSource{T}, polr::Int, sample0::Int, nsam
     samples = @view samples[(1 + sample0):end]
     if length(samples) < nsamples
         old_samples = samples
-        samples = Array{Complex{T}}(undef, nsamples)
+        samples = Array{T}(undef, nsamples)
         samples[1:length(old_samples)] .= old_samples
         samples[(length(old_samples) + 1):end] .= 0
     elseif length(samples) > nsamples
