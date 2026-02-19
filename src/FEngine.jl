@@ -560,11 +560,15 @@ function fengine(
     # Old index order: (freq, time, dish, polr)
     # New index order: (dish, polr, time, freq)
     println("Corner turn...")
+    t0 = time()
     xdata = Array(permutedims(data, (3, 4, 2, 1)))
     # tdata = Array{Int4x2}(undef, ntimes, nfreqs, ndishes, npolrs)
     # tiled_transpose!(reshape(tdata, (ntimes, nfreqs, :)), reshape(data, (nfreqs, ntimes, :)))
     # xdata = Array{Int4x2}(undef, ndishes, npolrs, ntimes, nfreqs)
     # tiled_transpose!(reshape(xdata, (ndishes * npolrs, ntimes * nfreqs, 1)), reshape(tdata, (ntimes * nfreqs, ndishes * npolrs, 1)))
+    t1 = time()
+    memtime = t1 - t0
+    println("    Elapsed time: $(round(memtime; digits=1)) s")
 
     # Output
     println("Writing to file...")
