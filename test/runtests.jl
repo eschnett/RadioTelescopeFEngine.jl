@@ -1,6 +1,23 @@
 using FEngine
 using Test
 
+@testset "tiled_transpose!" begin
+    B = rand(UInt8, 10, 9, 1)
+    A = Array{UInt8}(undef, 9, 10, 1)
+    FEngine.tiled_transpose!(A, B)
+    @test permutedims(B, (2, 1, 3)) == A
+
+    B = rand(UInt8, 100, 90, 1)
+    A = Array{UInt8}(undef, 90, 100, 1)
+    FEngine.tiled_transpose!(A, B)
+    @test permutedims(B, (2, 1, 3)) == A
+
+    B = rand(UInt8, 1000, 900, 1)
+    A = Array{UInt8}(undef, 900, 1000, 1)
+    FEngine.tiled_transpose!(A, B)
+    @test permutedims(B, (2, 1, 3)) == A
+end
+
 @testset "FEngine T=$T" for T in [Float32, Float64]
     noise = Noise{T}(3.0)
     source = MonochromaticSource{T}(1.0e+9, (7.5, 0), (0.0, 0.0), 0.0, 0.0)

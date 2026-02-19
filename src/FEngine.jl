@@ -477,14 +477,14 @@ function tiled_transpose!(A::AbstractArray{T,3}, B::AbstractArray{T,3}) where {T
     di1, dj1 = 128, 128
 
     # Loop over tiles (multi-threaded)
+    # for k in 1:nk, j2 in 1:dj2:nj, i2 in 1:di2:ni
     cld_ni_di2 = cld(ni, di2)
     cld_nj_dj2 = cld(nj, dj2)
     @showprogress desc = "Corner turn" dt = 1 @threads for idx in 1:(nk * cld_nj_dj2 * cld_ni_di2)
         idx2, i2 = fldmod1(idx, cld_ni_di2)
         k, j2 = fldmod1(idx2, cld_nj_dj2)
-        i2 *= di2
-        j2 *= dj2
-
+        i2 = (i2-1)*di2+1
+        j2 = (j2-1)*dj2+1
         # Traverse large (outer) tiles
         for j1 in j2:min(nj, j2 + dj2 - 1), i1 in i2:min(ni, i2 + di2 - 1)
             # Traverse small (inner) tiles
@@ -560,10 +560,11 @@ function fengine(
     # Old index order: (freq, time, dish, polr)
     # New index order: (dish, polr, time, freq)
     println("Corner turn...")
-    tdata = Array{Int4x2}(undef, ntimes, nfreqs, ndishes, npolrs)
-    tiled_transpose!(reshape(tdata, (ntimes, nfreqs, :)), reshape(data, (nfreqs, ntimes, :)))
-    xdata = Array{Int4x2}(undef, ndishes, npolrs, ntimes, nfreqs)
-    tiled_transpose!(reshape(xdata, (ndishes * npolrs, ntimes * nfreqs, 1)), reshape(tdata, (ntimes * nfreqs, ndishes * npolrs, 1)))
+    xdata = Array(permutedims(data, (3, 4, 2, 1)))
+    # tdata = Array{Int4x2}(undef, ntimes, nfreqs, ndishes, npolrs)
+    # tiled_transpose!(reshape(tdata, (ntimes, nfreqs, :)), reshape(data, (nfreqs, ntimes, :)))
+    # xdata = Array{Int4x2}(undef, ndishes, npolrs, ntimes, nfreqs)
+    # tiled_transpose!(reshape(xdata, (ndishes * npolrs, ntimes * nfreqs, 1)), reshape(tdata, (ntimes * nfreqs, ndishes * npolrs, 1)))
 
     # Output
     println("Writing to file...")
