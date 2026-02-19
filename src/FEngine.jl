@@ -465,30 +465,38 @@ end
 ################################################################################
 # F-engine: corner turn
 
+function transpose_one_tile!(A::AbstractArray{T,2}, B::AbstractArray{T,2}, ::Val{N}) where {T,N}
+    @assert size(A) == (N, N)
+    @assert size(B) == (N, N)
+    @inbounds for j in 1:N, i in 1:N
+        A[i,j] = B[j,i]
+    end
+    nothing
+end
+
 # Transpose the first two dimensions, the third is a spectator
-function tiled_transpose!(A::AbstractArray{T,3}, B::AbstractArray{T,3}) where {T}
+function tiled_transpose!(A::AbstractArray{T,3}, B::AbstractArray{T,3}, ::Val{N}=Val(32)) where {T, N}
     ni, nj, nk = size(A)
     @assert size(B) == (nj, ni, nk)
 
     @assert sizeof(T) == 1
-    # Choose large (outer) tiles of about 1 MB
-    di2, dj2 = 1024, 1024
-    # Choose small (inner) tiles of about 16 kB
-    di1, dj1 = 128, 128
 
     # Loop over tiles (multi-threaded)
-    # for k in 1:nk, j2 in 1:dj2:nj, i2 in 1:di2:ni
-    cld_ni_di2 = cld(ni, di2)
-    cld_nj_dj2 = cld(nj, dj2)
-    @showprogress desc = "Corner turn" dt = 1 @threads for idx in 1:(nk * cld_nj_dj2 * cld_ni_di2)
-        idx2, i2 = fldmod1(idx, cld_ni_di2)
-        k, j2 = fldmod1(idx2, cld_nj_dj2)
-        i2 = (i2-1)*di2+1
-        j2 = (j2-1)*dj2+1
-        # Traverse large (outer) tiles
-        for j1 in j2:min(nj, j2 + dj2 - 1), i1 in i2:min(ni, i2 + di2 - 1)
-            # Traverse small (inner) tiles
-            for j in j1:min(nj, j1 + dj1 - 1), i in i1:min(ni, i1 + di1 - 1)
+    # for k in 1:nk, j1 in 1:N:nj, i1 in 1:N:ni
+    cld_ni_N = cld(ni, N)
+    cld_nj_N = cld(nj, N)
+    @showprogress desc = "Corner turn" dt = 1 @threads for idx in 1:(nk * cld_nj_N * cld_ni_N)
+        idx2, i1 = fldmod1(idx, cld_ni_N)
+        k, j1 = fldmod1(idx2, cld_nj_N)
+        i1 = (i1-1)*N+1
+        j1 = (j1-1)*N+1
+
+        @inbounds if false && i1+N-1 <= ni && j1+N-1 <= nj
+            # Use efficient transpose
+            transpose_one_tile!(view(A, i1:i1+N-1, j1:j1+N-1, k), view(B, j1:j1+N-1, i1:i1+N-1, k), Val(N))
+        else
+            # Traverse small (inner) tile
+            for j in j1:min(nj, j1 + N - 1), i in i1:min(ni, i1 + N - 1)
                 A[i, j, k] = B[j, i, k]
             end
         end
@@ -561,11 +569,21 @@ function fengine(
     # New index order: (dish, polr, time, freq)
     println("Corner turn...")
     t0 = time()
-    xdata = Array(permutedims(data, (3, 4, 2, 1)))
+    #
+    # xdata = Array(permutedims(data, (3, 4, 2, 1)))
+    #
+    tdata = Array{Int4x2}(undef, ntimes, nfreqs, ndishes, npolrs)
+    tiled_transpose!(reshape(tdata, (ntimes, nfreqs, :)), reshape(data, (nfreqs, ntimes, :)))
+    xdata = Array{Int4x2}(undef, ndishes, npolrs, ntimes, nfreqs)
+    tiled_transpose!(reshape(xdata, (ndishes * npolrs, ntimes * nfreqs, 1)), reshape(tdata, (ntimes * nfreqs, ndishes * npolrs, 1)))
+    #
     # tdata = Array{Int4x2}(undef, ntimes, nfreqs, ndishes, npolrs)
-    # tiled_transpose!(reshape(tdata, (ntimes, nfreqs, :)), reshape(data, (nfreqs, ntimes, :)))
+    # for polr in 1:npolrs, dish in 1:ndishes
+    #     permutedims!(view(tdata, (:, :, dish, polr)), view(data, (:, :, dish, polr)), (2, 1))
+    # end
     # xdata = Array{Int4x2}(undef, ndishes, npolrs, ntimes, nfreqs)
-    # tiled_transpose!(reshape(xdata, (ndishes * npolrs, ntimes * nfreqs, 1)), reshape(tdata, (ntimes * nfreqs, ndishes * npolrs, 1)))
+    # permutedims!(reshape(xdata, (ntimes * nfreqs, ndishes * npolrs)), reshape(tdata, (ndishes * npolrs, ntimes * nfreqs)), (2, 1))
+    #
     t1 = time()
     memtime = t1 - t0
     println("    Elapsed time: $(round(memtime; digits=1)) s")
