@@ -1,6 +1,6 @@
 using FEngine
 
-filename = "voltage_chime.h5"
+filename = "/scratch/eschnett/voltage_chime.h5"
 
 T = Float64
 
