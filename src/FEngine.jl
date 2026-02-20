@@ -528,6 +528,12 @@ function fengine(
     nsamples = (ntimes + pfb.ntaps - 1) * pfb.nsamples
     println("    ndishes: $ndishes, nfreqs: $nfreqs, ntimes: $ntimes")
 
+    # Check dishes for duplicates
+    let
+        disharray = [(dish.ix, dish.iy) for dish in dishes]
+        @assert length(Set(disharray)) == length(disharray)
+    end
+
     if !isempty(frb_sources)
         println("Simulating FRBs...")
         frb_samples = [zeros(T, nsamples), zeros(T, nsamples)]
@@ -592,33 +598,35 @@ function fengine(
     println("Writing to file...")
     t0 = time()
     h5open(filename, "w") do h5file
-        chunksize_time = min(ntimes, nextpow(2, 1024^2 ÷ (ndishes * npolrs)))
-        chunksize = (ndishes, npolrs, 1, chunksize_time)
-        filter = BitshuffleFilter(; compressor=:zstd, comp_level=3)
         xdata::AbstractArray{Int4x2}
+        chunksize_time = min(ntimes, nextpow(2, 1024^2 ÷ (sizeof(eltype(xdata)) * ndishes * npolrs)))
+        chunksize = (ndishes, npolrs, chunksize_time, 1)
+        filter = BitshuffleFilter(; compressor=:zstd, comp_level=3)
         # Either chunking or compressing is very slow; I don't have the patience.
         # The compression ratio is good (~13%) for monochromatic sources.
-        # h5file["voltage", chunk = chunksize, filters = filter] = reinterpret(UInt8, xdata)
-        h5file["voltage"] = reinterpret(UInt8, xdata)
-        voltage = h5file["voltage"]
-        attrs(voltage)["name"] = "E"
-        attrs(voltage)["type"] = "int4x2_swapped_withoffset"
-        attrs(voltage)["dim_names"] = ["F", "T", "P", "D"]
-        attrs(voltage)["dim_scalings"] = [1, 1, 1, 1]
+        # Trying again; the chunking was set up wrong.
+        dataset = create_dataset(h5file, "voltage", UInt8, size(xdata); chunk=chunksize, filters=filter)
+        # dataset = create_dataset(h5file, "voltage", UInt8, size(xdata))
 
-        attrs(voltage)["dish_spacing_x"] = dishgrid.dx
-        attrs(voltage)["dish_spacing_y"] = dishgrid.dy
-        attrs(voltage)["dish_locations_x"] = [dish.ix for dish in dishes]
-        attrs(voltage)["dish_locations_y"] = [dish.iy for dish in dishes]
+        attrs(dataset)["name"] = "E"
+        attrs(dataset)["type"] = "int4x2_swapped_withoffset"
+        attrs(dataset)["dim_names"] = ["F", "T", "P", "D"]
+        attrs(dataset)["dim_scalings"] = [1, 1, 1, 1]
 
-        attrs(voltage)["coarse_freq"] = pfb.frequency_channels
-        attrs(voltage)["freq_upchan_factor"] = fill(1, nfreqs)
-        attrs(voltage)["freq_upchan_index"] = fill(0, nfreqs)
+        attrs(dataset)["dish_spacing_x"] = dishgrid.dx
+        attrs(dataset)["dish_spacing_y"] = dishgrid.dy
+        attrs(dataset)["dish_locations_x"] = [dish.ix for dish in dishes]
+        attrs(dataset)["dish_locations_y"] = [dish.iy for dish in dishes]
 
-        attrs(voltage)["time_downsampling_fpga"] = 1
-        attrs(voltage)["fpga_seq_num"] = pfb.nsamples * sample0
-        attrs(voltage)["fpga_seq_time_nsec"] = adc.t₀ * 1.0e+9
-        attrs(voltage)["seq_length_nsec"] = pfb.nsamples * adc.Δt * 1.0e+9
+        attrs(dataset)["coarse_freq"] = pfb.frequency_channels
+        attrs(dataset)["freq_upchan_factor"] = fill(1, nfreqs)
+        attrs(dataset)["freq_upchan_index"] = fill(0, nfreqs)
+
+        attrs(dataset)["time_downsampling_fpga"] = 1
+        attrs(dataset)["fpga_seq_num"] = pfb.nsamples * sample0
+        attrs(dataset)["seq_length_nsec"] = pfb.nsamples * adc.Δt * 1.0e+9
+
+        write(dataset, reinterpret(UInt8, xdata))
     end
     t1 = time()
     filetime = t1 - t0
@@ -631,5 +639,7 @@ function fengine(
     println("Done.")
     return nothing
 end
+
+# time h5repack --verbose --filter GZIP=4 --layout CHUNK=1x8192x2x64 voltage_pathfinder.h5 voltage_pathfinder.compressed.h5
 
 end
