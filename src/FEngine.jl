@@ -678,10 +678,10 @@ function fengine(
 
     nfilebytes = filesize(filename)
     percent = 100 * nfilebytes / total_nbytes
-    throughput = nfilebytes / filetime
+    throughput = nfilebytes / total_filetime
     println("Calculation time: $(round(calctime; digits=1)) s")
     println("Final file size: $(Humanize.datasize(nfilebytes)) ($(round(percent; digits=1))%)")
-    println("I/O time: $(round(filetime; digits=1)) s ($(round(throughput / 1.0e+6; digits=1)) MB/s)")
+    println("I/O time: $(round(total_filetime; digits=1)) s ($(round(throughput / 1.0e+6; digits=1)) MB/s)")
 
     println("Done.")
     return nothing
