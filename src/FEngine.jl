@@ -623,6 +623,7 @@ function fengine(
     total_nbytes = 0
 
     h5open(filename, "w") do h5file
+        datasetsize = (ndishes, npolrs, ntimes, nfreqs)
         chunksize_time = min(ntimes_chunksize, nextpow(2, 1024^2 ÷ (ndishes * npolrs)))
         chunksize = (ndishes, npolrs, chunksize_time, 1)
         # A standard GZIP (deflate) filte compresses better than
@@ -633,7 +634,9 @@ function fengine(
         #
         # filters = BitshuffleFilter(; compressor=:zstd, comp_level=3)
         filters = HDF5.Filters.Deflate(4)
-        dataset = create_dataset(h5file, "voltage", UInt8, (ndishes, npolrs, ntimes, nfreqs); chunk=chunksize, filters=filters)
+        println("    HDF5 dataset size is $datasetsize ($(prod(datasetsize)÷1000000000) GB)")
+        println("    HDF5 chunk size is $chunksize ($(prod(chunksize)÷100000) MB)")
+        dataset = create_dataset(h5file, "voltage", UInt8, datasetsize; chunk=chunksize, filters=filters)
 
         attrs(dataset)["name"] = "E"
         attrs(dataset)["type"] = "int4x2_swapped_withoffset"
