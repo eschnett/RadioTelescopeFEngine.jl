@@ -563,7 +563,7 @@ function fengine_calc(
             data[:, :, dish, polr] .= iframe.data
         end
     end
-    nbytes += sizeof(data)
+    nbytes = sizeof(data)
     println("        Data size: $(Humanize.datasize(nbytes))")
 
     # Corner turn
