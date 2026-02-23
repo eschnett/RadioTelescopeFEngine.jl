@@ -544,6 +544,9 @@ function fengine(
         frb_samples = [zeros(T, 0), zeros(T, 0)]
     end
 
+    # TODO: Reduce memory requirements by calculating in time chunks.
+    # Choose a respective chunked HDF5 file layout.
+
     println("Simulating F-Engine...")
     # Preallocate work arrays
     nthreads() = Threads.nthreads(:default)
@@ -580,8 +583,10 @@ function fengine(
     #
     tdata = Array{Int4x2}(undef, ntimes, nfreqs, ndishes, npolrs)
     tiled_transpose!(reshape(tdata, (ntimes, nfreqs, :)), reshape(data, (nfreqs, ntimes, :)))
+    data = nothing              # Free memory
     xdata = Array{Int4x2}(undef, ndishes, npolrs, ntimes, nfreqs)
     tiled_transpose!(reshape(xdata, (ndishes * npolrs, ntimes * nfreqs, 1)), reshape(tdata, (ntimes * nfreqs, ndishes * npolrs, 1)))
+    tdata = nothing             # Free memory
     #
     # tdata = Array{Int4x2}(undef, ntimes, nfreqs, ndishes, npolrs)
     # for polr in 1:npolrs, dish in 1:ndishes
@@ -601,10 +606,14 @@ function fengine(
         xdata::AbstractArray{Int4x2}
         chunksize_time = min(ntimes, nextpow(2, 1024^2 ÷ (sizeof(eltype(xdata)) * ndishes * npolrs)))
         chunksize = (ndishes, npolrs, chunksize_time, 1)
-        filter = BitshuffleFilter(; compressor=:zstd, comp_level=3)
-        # Either chunking or compressing is very slow; I don't have the patience.
-        # The compression ratio is good (~13%) for monochromatic sources.
-        # Trying again; the chunking was set up wrong.
+        # A standard GZIP (deflate) filte compresses better than
+        # bitshuffle. This is possibly the case because we have many
+        # zeros (0x88) in the datasets, and these are handled well by
+        # GZIP, and there are no further patterns to discover in our
+        # noisy data.
+        #
+        # filter = BitshuffleFilter(; compressor=:zstd, comp_level=3)
+        filter = (deflate=4,)
         dataset = create_dataset(h5file, "voltage", UInt8, size(xdata); chunk=chunksize, filters=filter)
         # dataset = create_dataset(h5file, "voltage", UInt8, size(xdata))
 
