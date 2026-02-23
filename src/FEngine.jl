@@ -624,7 +624,7 @@ function fengine(
     # - slots=1021         number of cache slots (should be ~100x number of chunks) (should be prime)
     # - bytes=256*1024^2   256 MB cache
     # - reemption=0.75     fraction of chunks without open objects to evict first
-    dapl = HDF5.DatasetAccessProperties(; chunk_cache=(1021,256*1024^2, 0.75))
+    dapl = HDF5.DatasetAccessProperties(; chunk_cache=(1021, 256*1024^2, 0.75))
 
     total_filetime = 0.0
     total_calctime = 0.0
@@ -679,7 +679,7 @@ function fengine(
             println("    Writing to file...")
             t0 = time()
             xdata::AbstractArray{Int4x2}
-            dataset[:, :, :, time0:(time0 + ntimes_chunksize - 1)] = reinterpret(UInt8, xdata)
+            dataset[:, :, :, (time0 + 1):(time0 + ntimes_chunksize)] = reinterpret(UInt8, xdata)
             flush(dataset)
             t1 = time()
             filetime = t1 - t0
