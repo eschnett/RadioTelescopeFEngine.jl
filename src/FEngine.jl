@@ -571,28 +571,15 @@ function fengine_calc(
     # New index order: (dish, polr, time, freq)
     println("    Corner turn...")
     t0 = time()
-    #
-    # xdata = Array(permutedims(data, (3, 4, 2, 1)))
-    #
-    tdata = Array{Int4x2}(undef, ntimes, nfreqs, ndishes, npolrs)
-    tiled_transpose!(reshape(tdata, (ntimes, nfreqs, :)), reshape(data, (nfreqs, ntimes, :)))
-    data = nothing              # Free memory
-    xdata = Array{Int4x2}(undef, ndishes, npolrs, ntimes, nfreqs)
-    tiled_transpose!(reshape(xdata, (ndishes * npolrs, ntimes * nfreqs, 1)), reshape(tdata, (ntimes * nfreqs, ndishes * npolrs, 1)))
-    tdata = nothing             # Free memory
-    #
-    # tdata = Array{Int4x2}(undef, ntimes, nfreqs, ndishes, npolrs)
-    # for polr in 1:npolrs, dish in 1:ndishes
-    #     permutedims!(view(tdata, (:, :, dish, polr)), view(data, (:, :, dish, polr)), (2, 1))
-    # end
-    # xdata = Array{Int4x2}(undef, ndishes, npolrs, ntimes, nfreqs)
-    # permutedims!(reshape(xdata, (ntimes * nfreqs, ndishes * npolrs)), reshape(tdata, (ndishes * npolrs, ntimes * nfreqs)), (2, 1))
-    #
+    # data = Array(permutedims(data, (3, 4, 1, 2)))
+    xdata = Array{Int4x2}(undef, ndishes, npolrs, nfreqs, ntimes)
+    tiled_transpose!(reshape(xdata, (ndishes * npolrs, nfreqs * ntimes, 1)), reshape(data, (nfreqs * ntimes, ndishes * npolrs, 1)))
+    data = xdata
     t1 = time()
     memtime = t1 - t0
     println("        Elapsed time: $(round(memtime; digits=1)) s")
 
-    return xdata
+    return data
 end
 
 ################################################################################
