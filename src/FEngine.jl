@@ -469,13 +469,13 @@ function transpose_one_tile!(A::AbstractArray{T,2}, B::AbstractArray{T,2}, ::Val
     @assert size(A) == (N, N)
     @assert size(B) == (N, N)
     @inbounds for j in 1:N, i in 1:N
-        A[i,j] = B[j,i]
+        A[i, j] = B[j, i]
     end
     nothing
 end
 
 # Transpose the first two dimensions, the third is a spectator
-function tiled_transpose!(A::AbstractArray{T,3}, B::AbstractArray{T,3}, ::Val{N}=Val(32)) where {T, N}
+function tiled_transpose!(A::AbstractArray{T,3}, B::AbstractArray{T,3}, (::Val{N})=Val(32)) where {T,N}
     ni, nj, nk = size(A)
     @assert size(B) == (nj, ni, nk)
 
@@ -493,7 +493,7 @@ function tiled_transpose!(A::AbstractArray{T,3}, B::AbstractArray{T,3}, ::Val{N}
 
         @inbounds if false && i1+N-1 <= ni && j1+N-1 <= nj
             # Use efficient transpose
-            transpose_one_tile!(view(A, i1:i1+N-1, j1:j1+N-1, k), view(B, j1:j1+N-1, i1:i1+N-1, k), Val(N))
+            transpose_one_tile!(view(A, i1:(i1 + N - 1), j1:(j1 + N - 1), k), view(B, j1:(j1 + N - 1), i1:(i1 + N - 1), k), Val(N))
         else
             # Traverse small (inner) tile
             for j in j1:min(nj, j1 + N - 1), i in i1:min(ni, i1 + N - 1)
@@ -563,6 +563,7 @@ function fengine_calc(
             data[:, :, dish, polr] .= iframe.data
         end
     end
+    nbytes += sizeof(data)
     println("        Data size: $(Humanize.datasize(nbytes))")
 
     # Corner turn
@@ -607,7 +608,7 @@ function fengine(
     adc::ADC{T},
     pfb::PFB,
     ntimes::Int,
-    ntimes_chunksize::Int=ntimes
+    ntimes_chunksize::Int=ntimes,
 ) where {T<:Real}
     println("F-Engine simulator")
 
@@ -619,13 +620,19 @@ function fengine(
 
     println("    ndishes: $ndishes, nfreqs: $nfreqs, ntimes: $ntimes, ntimes_chunksize: $ntimes_chunksize (chunks: $nchunks)")
 
+    # Increase HDF5 chunk cache size
+    # - slots=1021         number of cache slots (should be ~100x number of chunks) (should be prime)
+    # - bytes=256*1024^2   256 MB cache
+    # - reemption=0.75     fraction of chunks without open objects to evict first
+    dapl = HDF5.DatasetAccessProperties(; chunk_cache=(1021,256*1024^2, 0.75))
+
     total_filetime = 0.0
     total_calctime = 0.0
     total_nbytes = 0
 
     h5open(filename, "w") do h5file
         datasetsize = (ndishes, npolrs, ntimes, nfreqs)
-        chunksize_time = min(ntimes_chunksize, nextpow(2, 1024^2 ÷ (ndishes * npolrs)))
+        chunksize_time = min(ntimes_chunksize, nextpow(2, 8*1024^2 ÷ (ndishes * npolrs)))
         chunksize = (ndishes, npolrs, chunksize_time, 1)
         # A standard GZIP (deflate) filte compresses better than
         # bitshuffle. This is possibly the case because we have many
@@ -636,8 +643,8 @@ function fengine(
         # filters = BitshuffleFilter(; compressor=:zstd, comp_level=3)
         filters = HDF5.Filters.Deflate(4)
         println("    HDF5 dataset size is $datasetsize ($(prod(datasetsize)÷1000000000) GB)")
-        println("    HDF5 chunk size is $chunksize ($(prod(chunksize)÷100000) MB)")
-        dataset = create_dataset(h5file, "voltage", UInt8, datasetsize; chunk=chunksize, filters=filters)
+        println("    HDF5 chunk size is $chunksize ($(prod(chunksize)÷1000000) MB)")
+        dataset = create_dataset(h5file, "voltage", UInt8, datasetsize; dapl=dapl, chunk=chunksize, filters=filters)
 
         attrs(dataset)["name"] = "E"
         attrs(dataset)["type"] = "int4x2_swapped_withoffset"
@@ -658,7 +665,7 @@ function fengine(
         attrs(dataset)["seq_length_nsec"] = pfb.nsamples * adc.Δt * 1.0e+9
         flush(dataset)
 
-        for chunk in 0:nchunks-1
+        for chunk in 0:(nchunks - 1)
             time0 = chunk * ntimes_chunksize
             println("Calculating chunk #$chunk/$nchunks...")
 
@@ -672,7 +679,7 @@ function fengine(
             println("    Writing to file...")
             t0 = time()
             xdata::AbstractArray{Int4x2}
-            dataset[:, :, :, time0:time0+ntimes_chunksize-1] = reinterpret(UInt8, xdata)
+            dataset[:, :, :, time0:(time0 + ntimes_chunksize - 1)] = reinterpret(UInt8, xdata)
             flush(dataset)
             t1 = time()
             filetime = t1 - t0
