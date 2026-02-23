@@ -507,9 +507,7 @@ end
 
 ################################################################################
 
-export fengine
-function fengine(
-    filename::AbstractString,
+function fengine_calc(
     noise::Noise{T},
     sources::Vector{MonochromaticSource{T}},
     frb_sources::Vector{FRBSource{T}},
@@ -517,16 +515,13 @@ function fengine(
     dishes::Vector{Dish},
     adc::ADC{T},
     pfb::PFB,
-    ntimes::Int,
+    sample0::Int,
+    nsamples::Int,
 ) where {T<:Real}
-    println("F-Engine simulator")
-
     ndishes = length(dishes)
     npolrs = 2
     nfreqs = length(pfb.frequency_channels)
-    sample0 = 0
-    nsamples = (ntimes + pfb.ntaps - 1) * pfb.nsamples
-    println("    ndishes: $ndishes, nfreqs: $nfreqs, ntimes: $ntimes")
+    ntimes = nsamples ÷ pfb.nsamples - (pfb.ntaps - 1)
 
     # Check dishes for duplicates
     let
@@ -535,7 +530,7 @@ function fengine(
     end
 
     if !isempty(frb_sources)
-        println("Simulating FRBs...")
+        println("    Simulating FRBs...")
         frb_samples = [zeros(T, nsamples), zeros(T, nsamples)]
         for frb_source in frb_sources, polr in 1:npolrs
             frb_samples[polr] .+= make_frb_source(frb_source, polr, sample0, nsamples)
@@ -544,10 +539,7 @@ function fengine(
         frb_samples = [zeros(T, 0), zeros(T, 0)]
     end
 
-    # TODO: Reduce memory requirements by calculating in time chunks.
-    # Choose a respective chunked HDF5 file layout.
-
-    println("Simulating F-Engine...")
+    println("    Simulating F-Engine...")
     # Preallocate work arrays
     nthreads() = Threads.nthreads(:default)
     threadid() = Threads.threadid() - Threads.nthreads(:interactive)
@@ -570,13 +562,12 @@ function fengine(
             data[:, :, dish, polr] .= iframe.data
         end
     end
-    nbytes = sizeof(data)
-    println("    Data size: $(Humanize.datasize(nbytes))")
+    println("        Data size: $(Humanize.datasize(nbytes))")
 
     # Corner turn
     # Old index order: (freq, time, dish, polr)
     # New index order: (dish, polr, time, freq)
-    println("Corner turn...")
+    println("    Corner turn...")
     t0 = time()
     #
     # xdata = Array(permutedims(data, (3, 4, 2, 1)))
@@ -597,14 +588,42 @@ function fengine(
     #
     t1 = time()
     memtime = t1 - t0
-    println("    Elapsed time: $(round(memtime; digits=1)) s")
+    println("        Elapsed time: $(round(memtime; digits=1)) s")
 
-    # Output
-    println("Writing to file...")
-    t0 = time()
+    return xdata
+end
+
+################################################################################
+
+export fengine
+function fengine(
+    filename::AbstractString,
+    noise::Noise{T},
+    sources::Vector{MonochromaticSource{T}},
+    frb_sources::Vector{FRBSource{T}},
+    dishgrid::DishGrid{T},
+    dishes::Vector{Dish},
+    adc::ADC{T},
+    pfb::PFB,
+    ntimes::Int,
+    ntimes_chunksize::Int=ntimes
+) where {T<:Real}
+    println("F-Engine simulator")
+
+    ndishes = length(dishes)
+    npolrs = 2
+    nfreqs = length(pfb.frequency_channels)
+    @assert ntimes % ntimes_chunksize == 0
+    nchunks = ntimes ÷ ntimes_chunksize
+
+    println("    ndishes: $ndishes, nfreqs: $nfreqs, ntimes: $ntimes, ntimes_chunksize: $ntimes_chunksize (chunks: $nchunks)")
+
+    total_filetime = 0.0
+    total_calctime = 0.0
+    total_nbytes = 0
+
     h5open(filename, "w") do h5file
-        xdata::AbstractArray{Int4x2}
-        chunksize_time = min(ntimes, nextpow(2, 1024^2 ÷ (sizeof(eltype(xdata)) * ndishes * npolrs)))
+        chunksize_time = min(ntimes_chunksize, nextpow(2, 1024^2 ÷ (ndishes * npolrs)))
         chunksize = (ndishes, npolrs, chunksize_time, 1)
         # A standard GZIP (deflate) filte compresses better than
         # bitshuffle. This is possibly the case because we have many
@@ -612,10 +631,9 @@ function fengine(
         # GZIP, and there are no further patterns to discover in our
         # noisy data.
         #
-        # filter = BitshuffleFilter(; compressor=:zstd, comp_level=3)
-        filter = (deflate=4,)
-        dataset = create_dataset(h5file, "voltage", UInt8, size(xdata); chunk=chunksize, filters=filter)
-        # dataset = create_dataset(h5file, "voltage", UInt8, size(xdata))
+        # filters = BitshuffleFilter(; compressor=:zstd, comp_level=3)
+        filters = HDF5.Filters.Deflate(4)
+        dataset = create_dataset(h5file, "voltage", UInt8, (ndishes, npolrs, ntimes, nfreqs); chunk=chunksize, filters=filters)
 
         attrs(dataset)["name"] = "E"
         attrs(dataset)["type"] = "int4x2_swapped_withoffset"
@@ -632,18 +650,42 @@ function fengine(
         attrs(dataset)["freq_upchan_index"] = fill(0, nfreqs)
 
         attrs(dataset)["time_downsampling_fpga"] = 1
-        attrs(dataset)["fpga_seq_num"] = pfb.nsamples * sample0
+        attrs(dataset)["fpga_seq_num"] = 0
         attrs(dataset)["seq_length_nsec"] = pfb.nsamples * adc.Δt * 1.0e+9
+        flush(dataset)
 
-        write(dataset, reinterpret(UInt8, xdata))
+        for chunk in 0:nchunks-1
+            time0 = chunk * ntimes_chunksize
+            println("Calculating chunk #$chunk/$nchunks...")
+            sample0 = time0 * pfb.nsamples
+            nsamples = (ntimes + (pfb.ntaps - 1)) * pfb.nsamples
+
+            t0 = time()
+            xdata = fengine_calc(noise, sources, frb_sources, dishgrid, dishes, adc, pfb, sample0, nsamples)
+            t1 = time()
+            calctime = t1 - t0
+            total_calctime += calctime
+
+            # Output
+            println("    Writing to file...")
+            t0 = time()
+            xdata::AbstractArray{Int4x2}
+            dataset[:, :, :, time0:time0+ntimes_chunksize-1] = reinterpret(UInt8, xdata)
+            flush(dataset)
+            t1 = time()
+            filetime = t1 - t0
+            total_filetime += filetime
+
+            total_nbytes += sizeof(xdata)
+        end
     end
-    t1 = time()
-    filetime = t1 - t0
+
     nfilebytes = filesize(filename)
-    percent = 100 * nfilebytes / nbytes
+    percent = 100 * nfilebytes / total_nbytes
     throughput = nfilebytes / filetime
-    println("    File size: $(Humanize.datasize(nfilebytes)) ($(round(percent; digits=1))%)")
-    println("    I/O time: $(round(filetime; digits=1)) s ($(round(throughput / 1.0e+6; digits=1)) MB/s)")
+    println("Calculation time: $(round(calctime; digits=1)) s")
+    println("Final file size: $(Humanize.datasize(nfilebytes)) ($(round(percent; digits=1))%)")
+    println("I/O time: $(round(filetime; digits=1)) s ($(round(throughput / 1.0e+6; digits=1)) MB/s)")
 
     println("Done.")
     return nothing
