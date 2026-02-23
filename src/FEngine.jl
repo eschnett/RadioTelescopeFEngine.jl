@@ -515,13 +515,14 @@ function fengine_calc(
     dishes::Vector{Dish},
     adc::ADC{T},
     pfb::PFB,
-    sample0::Int,
-    nsamples::Int,
+    time0::Int,
+    ntimes::Int,
 ) where {T<:Real}
     ndishes = length(dishes)
     npolrs = 2
     nfreqs = length(pfb.frequency_channels)
-    ntimes = nsamples ÷ pfb.nsamples - (pfb.ntaps - 1)
+    sample0 = time0 * pfb.nsamples
+    nsamples = (ntimes + (pfb.ntaps - 1)) * pfb.nsamples
 
     # Check dishes for duplicates
     let
@@ -660,11 +661,9 @@ function fengine(
         for chunk in 0:nchunks-1
             time0 = chunk * ntimes_chunksize
             println("Calculating chunk #$chunk/$nchunks...")
-            sample0 = time0 * pfb.nsamples
-            nsamples = (ntimes + (pfb.ntaps - 1)) * pfb.nsamples
 
             t0 = time()
-            xdata = fengine_calc(noise, sources, frb_sources, dishgrid, dishes, adc, pfb, sample0, nsamples)
+            xdata = fengine_calc(noise, sources, frb_sources, dishgrid, dishes, adc, pfb, time0, ntimes_chunksize)
             t1 = time()
             calctime = t1 - t0
             total_calctime += calctime
