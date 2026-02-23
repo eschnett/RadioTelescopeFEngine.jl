@@ -23,6 +23,6 @@ pfb = PFB(4, 16384, collect(1536:7679)) # 300 MHz ... 1500 MHz
 buffersize = 8192
 ntimes = 25 * buffersize
 
-fengine(filename, noise, [source], FRBSource{T}[], dishgrid, dishes, adc, pfb, ntimes, buffersize ÷ 4)
+fengine(filename, noise, [source], FRBSource{T}[], dishgrid, dishes, adc, pfb, ntimes, buffersize)
 
 # time h5repack --layout='voltage:CHUNK=8192' --filter='voltage:GZIP=9' voltage_chord.h5 voltage_chord_compressed.h5
