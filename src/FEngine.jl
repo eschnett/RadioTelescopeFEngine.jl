@@ -631,9 +631,9 @@ function fengine(
     total_nbytes = 0
 
     h5open(filename, "w") do h5file
-        datasetsize = (ndishes, npolrs, ntimes, nfreqs)
+        datasetsize = (ndishes, npolrs, nfreqs, ntimes)
         chunksize_time = min(ntimes_chunksize, nextpow(2, 8*1024^2 ÷ (ndishes * npolrs)))
-        chunksize = (ndishes, npolrs, chunksize_time, 1)
+        chunksize = (ndishes, npolrs, 1, chunksize_time)
         # A standard GZIP (deflate) filte compresses better than
         # bitshuffle. This is possibly the case because we have many
         # zeros (0x88) in the datasets, and these are handled well by
@@ -648,7 +648,7 @@ function fengine(
 
         attrs(dataset)["name"] = "E"
         attrs(dataset)["type"] = "int4x2_swapped_withoffset"
-        attrs(dataset)["dim_names"] = ["F", "T", "P", "D"]
+        attrs(dataset)["dim_names"] = ["T", "F", "P", "D"]
         attrs(dataset)["dim_scalings"] = [1, 1, 1, 1]
 
         attrs(dataset)["dish_spacing_x"] = dishgrid.dx
