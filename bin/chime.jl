@@ -18,7 +18,7 @@ adc_frequency = 1.6e+9     # [Hz]
 adc = ADC{T}(0, inv(adc_frequency))
 pfb = PFB(4, 4096, collect(1024:2047)) # 400 MHz ... 800 MHz
 
-buffersize = 4096
+buffersize = 16384
 ntimes = 50 * buffersize
 
 fengine(filename, noise, [source], FRBSource{T}[], dishgrid, dishes, adc, pfb, ntimes, buffersize)

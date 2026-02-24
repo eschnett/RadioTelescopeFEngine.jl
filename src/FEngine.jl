@@ -7,6 +7,7 @@ using Base.Threads
 using CUDASIMDTypes
 using FFTW
 using H5Zbitshuffle
+using H5Zlz4
 using HDF5
 using Humanize
 using LinearAlgebra
@@ -628,7 +629,9 @@ function fengine(
         # noisy data.
         #
         # filters = BitshuffleFilter(; compressor=:zstd, comp_level=3)
-        filters = HDF5.Filters.Deflate(4)
+        filters = BitshuffleFilter(; compressor=:lz4, comp_level=1)
+        # filters = HDF5.Filters.Deflate(4)
+        # ??? filters = Lz4Filter()
         println("    HDF5 dataset size is $datasetsize ($(prod(datasetsize)÷1000000000) GB)")
         println("    HDF5 chunk size is $chunksize ($(prod(chunksize)÷1000000) MB)")
         dataset = create_dataset(h5file, "voltage", UInt8, datasetsize; dapl=dapl, chunk=chunksize, filters=filters)
