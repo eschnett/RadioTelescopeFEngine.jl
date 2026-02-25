@@ -1,6 +1,6 @@
 name = "FEngine"
 uuid = "6144d896-06c8-490b-87fb-648715f71802"
-version = "0.1.0"
+version = "1.0.0"
 authors = ["Erik Schnetter <schnetter@gmail.com>"]
 
 [deps]
