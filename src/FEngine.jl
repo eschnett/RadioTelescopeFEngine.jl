@@ -618,7 +618,7 @@ function fengine(
     total_calctime = 0.0
     total_nbytes = 0
 
-    h5open(filename, "w") do h5file
+    h5open(filename, "w"; swmr=true) do h5file
         datasetsize = (ndishes, npolrs, nfreqs, ntimes)
         chunksize_time = min(ntimes_chunksize, nextpow(2, 8*1024^2 ÷ (ndishes * npolrs)))
         chunksize = (ndishes, npolrs, 1, chunksize_time)
@@ -628,9 +628,13 @@ function fengine(
         # GZIP, and there are no further patterns to discover in our
         # noisy data.
         #
+        # This filter is slow and does not compress well:
         # filters = BitshuffleFilter(; compressor=:zstd, comp_level=3)
-        filters = BitshuffleFilter(; compressor=:lz4, comp_level=1)
-        # filters = HDF5.Filters.Deflate(4)
+        # This filter is fast but does not compress well:
+        # filters = BitshuffleFilter(; compressor=:lz4, comp_level=1)
+        # This filter is good:
+        filters = HDF5.Filters.Deflate(4)
+        # This filter is untested:
         # ??? filters = Lz4Filter()
         println("    HDF5 dataset size is $datasetsize ($(prod(datasetsize)÷1000000000) GB)")
         println("    HDF5 chunk size is $chunksize ($(prod(chunksize)÷1000000) MB)")
