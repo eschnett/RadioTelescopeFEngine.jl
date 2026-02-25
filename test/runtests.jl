@@ -37,7 +37,8 @@ end
 
     ntimes = 64
 
-    filename = tempname(; suffix=".h5")
+    dir = mktempdir()
+    filename = "$dir/voltage.h5"
 
     fengine(filename, noise, [source], FRBSource{T}[], dishgrid, dishes, adc, pfb, ntimes)
 end
