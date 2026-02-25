@@ -1,6 +1,6 @@
-# FEngine.jl
+# RadioTelescopeFEngine.jl
 
-[![CI](https://github.com/eschnett/FEngine.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/eschnett/FEngine.jl/actions/workflows/CI.yml)
+[![CI](https://github.com/eschnett/RadioTelescopeFEngine.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/eschnett/RadioTelescopeFEngine.jl/actions/workflows/CI.yml)
 
 Simulate sources on the sky for the
 [CHIME](https://chime-experiment.ca),
@@ -31,3 +31,14 @@ results the F-Engine would produce. The result is written to file.
 This is meant a test input for the X-Engine running
 [Kotekan](https://github.com/kotekan/kotekan) which processes the data
 and forms beams.
+
+## Usage
+
+This package is used as a script. For example:
+```
+julia --project=@. bin/chime.jl
+```
+
+This requires a significant amount of memory and will produce a large
+file (several hundred GByte). See `test/runtests.jl` for a test the
+finishes much faster and produces a much smaller file.

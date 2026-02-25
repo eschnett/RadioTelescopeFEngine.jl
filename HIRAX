@@ -1,0 +1,17 @@
+-rw-rw-r-- 1 eschnett eschnett   3191959296 Feb 23 21:27 voltage_chime.1.h5
+-rw-rw-r-- 1 eschnett eschnett 159595290361 Feb 24 06:32 voltage_chime.h5
+-rw-rw-r-- 1 eschnett eschnett   4730093166 Feb 23 21:39 voltage_chord.1.h5
+-rw-rw-r-- 1 eschnett eschnett 118250408292 Feb 24 17:37 voltage_chord.h5
+-rw-rw-r-- 1 eschnett eschnett    798051655 Feb 23 21:42 voltage_hirax.1.h5
+-rw-rw-r-- 1 eschnett eschnett  39901278478 Feb 24 18:41 voltage_hirax.h5
+-rw-rw-r-- 1 eschnett eschnett    591881390 Feb 23 21:21 voltage_pathfinder.1.h5
+-rw-rw-r-- 1 eschnett eschnett  14792230295 Feb 23 22:19 voltage_pathfinder.h5
+
+
+
+    Writing to file...
+Calculation time: 770.1 s
+Final file size: 39.9 GB (37.2%)
+I/O time: 2730.1 s (14.6 MB/s)
+Done.
+eschnett@cx67:~/src/jl/FEngine.jl (2026-02-24 18:41:27)

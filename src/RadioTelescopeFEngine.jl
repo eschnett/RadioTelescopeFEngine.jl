@@ -1,4 +1,4 @@
-module FEngine
+module RadioTelescopeFEngine
 
 # Simulate sources on the sky, project them onto dishes, and process
 # the data (almost) the same way the F-Engine does
@@ -586,6 +586,33 @@ end
 ################################################################################
 
 export fengine
+"""
+    function fengine(
+        filename::AbstractString,
+        noise::Noise{T},
+        sources::Vector{MonochromaticSource{T}},
+        frb_sources::Vector{FRBSource{T}},
+        dishgrid::DishGrid{T},
+        dishes::Vector{Dish},
+        adc::ADC{T},
+        pfb::PFB,
+        ntimes::Int,
+        ntimes_chunksize::Int=ntimes,
+    )
+
+Run the F-Engine simulator.
+
+    - `filename`: Output file name (a HDF5 file)
+    - `noise`: Describes the noise that should be added to each antenna
+    - `sources`: Describes a set (possibly empty) of monochromatic point sources
+    - `frb_sources`: Describes a set (at most one) dispersed FRB
+    - `dishgrid`: Spacing between dishes (antennae)
+    - `dishes`: Set of dishes, located on integer grid positions
+    - `adc`: Properties of the F-Engine ADC
+    - `pfb`: PRoperties of the F-Engine Fourier transform
+    - `ntimes`: Number of time samples to produce
+    - `ntimes_chunksize`: Simulate in chunks to reduce memory requirements; has no effect on output
+"""
 function fengine(
     filename::AbstractString,
     noise::Noise{T},
