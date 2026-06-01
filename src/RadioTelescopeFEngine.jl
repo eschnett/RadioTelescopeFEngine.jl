@@ -33,13 +33,6 @@ sinc1(x) = iszero(x) ? one(x) : sinpi(x) / (π * x)
 Base.clamp(val::Complex, lo, hi) = Complex(clamp(real(val), lo, hi), clamp(imag(val), lo, hi))
 Base.round(::Type{T}, val::Complex) where {T} = Complex{T}(round(T, real(val)), round(T, imag(val)))
 
-# Convert a complex integer to our 4+4-bit encoding
-ci2i4(c::Complex) = Int4x2(imag(c) ⊻ 0x8, real(c) ⊻ 0x8)
-function i42ci(i4::Int4x2)
-    i2 = convert(NTuple{2,Int8}, i4)
-    return Complex{Int8}(i2[2] ⊻ 0x8, i2[1] ⊻ 0x8)
-end
-
 ################################################################################
 # Sources
 
@@ -58,7 +51,8 @@ struct Noise{T} <: AbstractSource{T}
 end
 
 function calc_field(noise::Noise{T}, ::Int, ::T) where {T<:Real}
-    return (noise.A * randn(T))::T
+    #TODO return (noise.A * randn(T))::T
+    return (noise.A * rand(T))::T
 end
 
 ########################################
@@ -67,13 +61,12 @@ export MonochromaticSource
 struct MonochromaticSource{T} <: AbstractSource{T}
     f::T                        # [Hz]
     A::NTuple{2,T}              # both polarizations
-    ϕ::NTuple{2,T}              # [rad], both polarizations
     angle_x::T                  # [rad]
     angle_y::T                  # [rad]
 end
 
 function calc_field(source::MonochromaticSource{T}, polr::Int, t::T) where {T<:Real}
-    return (source.A[polr] * sinpi(2 * source.f * t + source.ϕ[polr] / π))::T
+    return (source.A[polr] * sinpi(2 * source.f * t))::T
 end
 
 ########################################
@@ -152,22 +145,25 @@ function make_frb_source(frb_source::FRBSource{T}, polr::Int, sample0::Int, nsam
     # We upchannelize and thus need to have a higher frequency resolution
     # scale = 64
     scale = frb_source.scale
+    # The number of time samples we need
     ntimes1 = ceil(Int, (frb_source.t₁ + 10 * frb_source.tw) / Δt)
     ntimes1 = cld(ntimes1, scale) * scale
+    # The number of rescaled samples we need
     @assert ntimes1 % scale == 0
     ntimes = ntimes1 ÷ scale
     @assert pfb_nsamples % 2 == 0
+    # The number of rescaled frequencies we need
     nfreqs = pfb_nsamples ÷ 2 * scale + 1
 
     A::T = frb_source.A[polr]
     ϕ::T = frb_source.ϕ[polr]
-    F::T = adcfreq / 2          # 1600 MHz for CHORD
-    t::T = ntimes1 * Δt         # 41.94304 ms for CHORD
 
-    phystime(time::Integer) = time * t / ntimes
-    physfreq(freq::Integer) = freq * F / nfreqs
+    # Calculate the physical time and frequency (in SI units) from rescaled times and frequencies
+    phystime(time::Integer) = time * Δt * scale
+    physfreq(freq::Integer) = freq * Δf / scale
 
     # Create FRB
+    # TODO: Calculate this only once, then extract the data by looking at sample0, nsamples
     frb = Array{Complex{T}}(undef, nfreqs, ntimes)
     # @showprogress desc = "FRB" dt = 1 @threads for freq in 1:nfreqs
     for freq in 1:nfreqs
@@ -215,7 +211,7 @@ struct Dish
 end
 
 function calc_delay(dishgrid::DishGrid{T}, dish::Dish, source::AbstractSource{T}) where {T<:Real}
-    return - (sin(source.angle_x) * dishgrid.dx * dish.ix + sin(source.angle_y) * dishgrid.dy * dish.iy) / ustrip(T(c₀))
+    return (sin(source.angle_x) * dishgrid.dx * dish.ix + sin(source.angle_y) * dishgrid.dy * dish.iy) / ustrip(T(c₀))
 end
 calc_delay(::DishGrid{T}, ::Dish, ::Noise{T}) where {T<:Real} = zero(T)
 
@@ -236,7 +232,6 @@ function adc_sample!(
     adcframe::ADCFrame{T},
     noise::Noise{T},
     sources::Vector{MonochromaticSource{T}},
-    # frb_sources::Vector{FRBSource{T}},
     frb_samples::Vector{T},
     dishgrid::DishGrid{T},
     dish::Dish,
@@ -245,8 +240,6 @@ function adc_sample!(
     sample0::Int,
     nsamples::Int,
 ) where {T<:Real}
-    t₀ = adc.t₀
-    Δt = adc.Δt
     nsources = length(sources)
 
     data = adcframe.data
@@ -259,17 +252,13 @@ function adc_sample!(
         E += calc_field(noise, polr, t)
 
         for source in 1:nsources
-            t′ = t + calc_delay(dishgrid, dish, sources[source])
+            t′ = t - calc_delay(dishgrid, dish, sources[source])
             E += calc_field(sources[source], polr, t′)
         end
 
         data[sample] = E
     end
 
-    # for frb_source in 1:length(frb_sources)
-    #     # NOTE: No dish delay yet!
-    #     samples = make_frb_source(frb_sources[frb_source], polr, sample0, nsamples)
-    # end
     if !isempty(frb_samples)
         data .+= frb_samples
     end
@@ -314,26 +303,26 @@ s: index
 M: number of taps
 U: number of samples
 
-sinc-Hanning weight function, eqn. (11), with `N = U+2`
+sinc-Hanning weight function, eqn. (11), with `N = U+1`
 """
 function sinc_hanning(::Type{T}, s, M, U) where {T<:Real}
     # # Naive
     # # @assert 0 <= s < M * U
     # s′ = (2 * s - (M * U - 1)) / T(2 * (M * U - 1)) # normalized to [-1/2; +1/2]
 
-    # Erik, maximum window width
-    # @assert -1 < 2 * s′ < +1
-    s′ = (2 * s - (M * U - 1)) / T(2 * (M * U + 1)) # normalized to [-1/2; +1/2]
+    # # Erik, maximum window width
+    # # @assert -1 < 2 * s′ < +1
+    # s′ = (2 * s - (M * U - 1)) / T(2 * (M * U + 1)) # normalized to [-1/2; +1/2]
 
     # # Richard Shaw
     # # @assert -1 < 2 * s′ < +1
     # s′ = (2 * s - (M * U)) / T(2 * (M * U)) # normalized to [-1/2; +1/2)
     # # @assert -1 <= 2 * s′ < +1
 
-    # # Erik, correct limit for M->1, U->1
-    # # @assert -1 < 2 * s′ < +1
-    # s′ = (2 * s - (M * U - 1)) / T(2 * (M * U)) # normalized to (-1/2; +1/2)
-    # # @assert -1 < 2 * s′ < +1
+    # Erik, correct limit for M->1, U->1
+    # @assert -1 < 2 * s′ < +1
+    s′ = (2 * s - (M * U - 1)) / T(2 * (M * U)) # normalized to (-1/2; +1/2)
+    # @assert -1 < 2 * s′ < +1
 
     # ∫ cos² π s = 1/2
     # ∫ sinc 4 s ≈ 3.21083
@@ -367,15 +356,15 @@ function channelize(data::AbstractVector{T}, ntaps::Int, nsamples::Int) where {T
     return output[begin:ntaps:end, :]
 end
 
-function channelize!(fframe::FFrame{T}, adc::ADC, pfb::PFB, adcframe::ADCFrame{T}) where {T<:Real}
+function channelize!(fframe::FFrame{T}, adc::ADC{T}, pfb::PFB, adcframe::ADCFrame{T}) where {T<:Real}
     ntaps = pfb.ntaps
     nsamples = pfb.nsamples
     frequency_channels = pfb.frequency_channels
     @assert ntaps > 0
     @assert nsamples > 0
 
-    t₀ = adc.t₀
-    Δt = adc.Δt
+    # t₀ = adc.t₀
+    # Δt = adc.Δt
     ntimes = length(adcframe.data)
     @assert ntimes % nsamples == 0
 
@@ -389,6 +378,7 @@ function channelize!(fframe::FFrame{T}, adc::ADC, pfb::PFB, adcframe::ADCFrame{T
 
     fdata = fframe.data
     @assert size(fdata) == (length(frequency_channels), ntimes′)
+    fdata .= 0.0/0.0
     # fdata = Array{Complex{T}}(undef, length(frequency_channels), ntimes′)
     for time′ in 1:ntimes′
         time0 = (time′ - 1) * nsamples + 1
@@ -420,25 +410,48 @@ struct IFrame{T}
     data::Array{Int4x2,2}   # [channel, time]
 end
 
-function quantize!(iframe::IFrame{T}, fframe::FFrame{T}) where {T<:Real}
+function quantize!(iframe::IFrame{T}, pfb::PFB, fframe::FFrame{T}; do_output::Bool=false) where {T<:Real}
     fdata = fframe.data
     nfreqs, ntimes = size(fdata)
 
     values = -7:+7
     scale = T(7.5)
 
-    # println("E-field statistics:")
-    # norm1 = norm(fdata, 1) / T(length(fdata))
-    # norm2 = norm(fdata, 2) / sqrt(T(length(fdata)))
-    # norminf = norm(fdata, Inf)
-    # nclipped = sum(x -> (abs(real(x)) > 7.5) + (abs(imag(x)) > 7.5), scale * fdata)
-    # nclipped_fraction = round(nclipped / (2 * length(fdata)); sigdigits=2)
-    # println("    norm1:   $norm1")
-    # println("    norm2:   $norm2")
-    # println("    norminf: $norminf")
-    # println("    nclipped: $nclipped (fraction $nclipped_fraction)")
+    if do_output
+        println("E-field statistics:")
+        for freq in 1:nfreqs
+            fdata1 = @view fdata[freq, :]
+            norm1 = norm(fdata1, 1) / T(length(fdata1))
+            norm2 = norm(fdata1, 2) / sqrt(T(length(fdata1)))
+            norminf = norm(fdata1, Inf)
+            nclipped = sum(x -> (abs(real(x)) > 7.5) + (abs(imag(x)) > 7.5), scale * fdata1)
+            nclipped_percent = round(nclipped * 100 / (2 * length(fdata1)); digits=1)
+            if norminf > 0.1
+                println("    freq=$freq")
+                println("        norm1:   $norm1")
+                println("        norm2:   $norm2")
+                println("        norminf: $norminf")
+                println("        nclipped: $nclipped ($nclipped_percent%)")
+            end
+        end
+        norm1 = norm(fdata, 1) / T(length(fdata))
+        norm2 = norm(fdata, 2) / sqrt(T(length(fdata)))
+        norminf = norm(fdata, Inf)
+        nclipped = sum(x -> (abs(real(x)) > 7.5) + (abs(imag(x)) > 7.5), scale * fdata)
+        nclipped_percent = round(nclipped * 100 / (2 * length(fdata)); digits=1)
+        println("    norm1:   $norm1")
+        println("    norm2:   $norm2")
+        println("    norminf: $norminf")
+        println("    nclipped: $nclipped ($nclipped_percent%)")
+    end
 
-    # counts = zeros(Int, 15)
+    if do_output
+        counts = zeros(Int, 15)
+        counts0 = zeros(Int, 15, nfreqs)
+    else
+        counts = zeros(Int, 0)
+        counts0 = zeros(Int, 0, nfreqs)
+    end
 
     # idata = round.(Int8, clamp.(scale * fdata, T(-7), T(+7)))
     idata = iframe.data
@@ -447,18 +460,43 @@ function quantize!(iframe::IFrame{T}, fframe::FFrame{T}) where {T<:Real}
     for time in 1:ntimes, freq in 1:nfreqs
         x = fdata[freq, time]
         i = round(Int8, clamp(scale * x, T(-7), T(+7)))
-        idata[freq, time] = ci2i4(i)
+        idata[freq, time] = swap_offset(Int4x2(real(i), imag(i)))
 
-        # counts[real(i) + 8] += 1
-        # counts[imag(i) + 8] += 1
+        if do_output
+            counts[real(i) + 8] += 1
+            counts[imag(i) + 8] += 1
+            counts0[real(i) + 8, freq] += 1
+            counts0[imag(i) + 8, freq] += 1
+        end
     end
 
-    # percents = round.(counts * 100 / (2 * length(idata)); digits=1)
-    # stats = Table(; value=values, count=counts, percent=percents)
-    # println("Quantization statistics:")
-    # pretty_table(
-    #     stats; column_labels=["value", "count", "percent"], table_format=TextTableFormat(; borders=text_table_borders__borderless)
-    # )
+    if do_output
+        println("Quantization statistics:")
+        for freq in 1:nfreqs
+            fdata1 = @view fdata[freq, :]
+            norminf = norm(fdata1, Inf)
+            if norminf > 0.1
+                println("    freq=$freq")
+                idata1 = @view idata[freq, :]
+                counts1 = @view counts0[:, freq]
+                percents = round.(counts1 * 100 / (2 * length(idata1)); digits=1)
+                stats = Table(; value=values, count=counts1, percent=percents)
+                pretty_table(
+                    stats;
+                    column_labels=["value", "count", "percent"],
+                    table_format=TextTableFormat(; borders=text_table_borders__borderless),
+                )
+            end
+        end
+        percents = round.(counts * 100 / (2 * length(idata)); digits=1)
+        stats = Table(; value=values, count=counts, percent=percents)
+        println("Quantization statistics:")
+        pretty_table(
+            stats;
+            column_labels=["value", "count", "percent"],
+            table_format=TextTableFormat(; borders=text_table_borders__borderless),
+        )
+    end
 
     return iframe
 end
@@ -560,7 +598,7 @@ function fengine_calc(
 
             adc_sample!(adcframe, noise, sources, frb_samples[polr], dishgrid, dishes[dish], polr, adc, sample0, nsamples)
             channelize!(fframe, adc, pfb, adcframe)
-            quantize!(iframe, fframe)
+            quantize!(iframe, pfb, fframe)
             data[:, :, dish, polr] .= iframe.data
         end
     end
@@ -658,9 +696,9 @@ function fengine(
         # This filter is slow and does not compress well:
         # filters = BitshuffleFilter(; compressor=:zstd, comp_level=3)
         # This filter is fast but does not compress well:
-        # filters = BitshuffleFilter(; compressor=:lz4, comp_level=1)
-        # This filter is good:
-        filters = HDF5.Filters.Deflate(4)
+        filters = BitshuffleFilter(; compressor=:lz4, comp_level=1)
+        # This filter is slow but good:
+        # filters = HDF5.Filters.Deflate(4)
         # This filter is untested:
         # ??? filters = Lz4Filter()
         println("    HDF5 dataset size is $datasetsize ($(prod(datasetsize)÷1000000000) GB)")
