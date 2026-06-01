@@ -19,8 +19,8 @@ using Test
 end
 
 @testset "RadioTelescopeFEngine T=$T" for T in [Float32, Float64]
-    noise = Noise{T}(3.0)
-    source = MonochromaticSource{T}(1.0e+9, (7.5, 0), (0.0, 0.0), 0.0, 0.0)
+    noise = Noise{T}(1.0/3.0)
+    source = MonochromaticSource{T}(1.0e+9, (1.0, 0), 0.0, 0.0)
 
     dishgrid = DishGrid{T}(6.3, 8.5) # CHORD
     dishes = Dish[]
