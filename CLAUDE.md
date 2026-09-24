@@ -41,6 +41,9 @@ how to work on the package.
 - Output dataset `voltage`, Julia shape `(D, P, F, T)` = C order `[T, F, P, D]`, element
   type `int4x2_swapped_withoffset` (real in the high nibble, both offset by 8).
   `swap_offset(Int4x2(re, im))` produces that encoding.
+- Compression is zstd (filter 32015), which kotekan's `hdf5plugin` can decode. Don't
+  switch to a filter kotekan can't read; check with `h5dump` and
+  `HDF5_PLUGIN_PATH=/opt/kotekan_env/lib/python3.12/site-packages/hdf5plugin/plugins` on cx67.
 - Attributes (`coarse_freq`, `freq_upchan_factor`, `freq_upchan_index`, `dim_names`,
   `dish_grid_indices`, ...) are read by kotekan's `hdf5FileReadSingleFile`; do not rename
   them without changing kotekan.

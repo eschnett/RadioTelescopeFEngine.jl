@@ -108,6 +108,33 @@ end
     end
 end
 
+@testset "fengine writes what fengine_calc computes T=$T" for T in [Float32, Float64]
+    HDF5 = R.HDF5
+    fadc, n, adc, pfb = small_setup(T)
+    Δf = fadc / n
+    dishgrid = DishGrid{T}(6.3, 8.5)
+    dishes = [Dish(x, y) for y in 0:2 for x in 0:3]
+    # No noise, so that the output is deterministic
+    noise = Noise{T}(0)
+    sources = [MonochromaticSource{T}(20.3 * Δf, (1.0, 0.5), 0.1, -0.05)]
+    ntimes, chunksize = 32, 16
+    filename = joinpath(mktempdir(), "voltage.h5")
+    fengine(filename, noise, sources, FRBSource{T}[], dishgrid, dishes, adc, pfb, ntimes, chunksize)
+    expected = cat(
+        (
+            reinterpret(UInt8, R.fengine_calc(noise, sources, FRBSource{T}[], dishgrid, dishes, adc, pfb, time0, chunksize)) for
+            time0 in 0:chunksize:(ntimes - 1)
+        )...;
+        dims=4,
+    )
+    HDF5.h5open(filename) do f
+        dataset = f["voltage"]
+        @test read(dataset) == expected
+        filters = HDF5.get_create_properties(dataset).filters
+        @test length(filters) == 1 && filters[1] isa R.H5Zzstd.ZstdFilter
+    end
+end
+
 @testset "RadioTelescopeFEngine T=$T" for T in [Float32, Float64]
     noise = Noise{T}(1.0/3.0)
     source = MonochromaticSource{T}(1.0e+9, (1.0, 0), 0.0, 0.0)

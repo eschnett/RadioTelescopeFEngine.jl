@@ -8,6 +8,7 @@ using CUDASIMDTypes
 using FFTW
 using H5Zbitshuffle
 using H5Zlz4
+using H5Zzstd
 using HDF5
 using Humanize
 using LinearAlgebra
@@ -849,20 +850,25 @@ function fengine(
         datasetsize = (ndishes, npolrs, nfreqs, ntimes)
         chunksize_time = min(ntimes_chunksize, nextpow(2, 8*1024^2 ÷ (ndishes * npolrs)))
         chunksize = (ndishes, npolrs, 1, chunksize_time)
-        # A standard GZIP (deflate) filte compresses better than
-        # bitshuffle. This is possibly the case because we have many
-        # zeros (0x88) in the datasets, and these are handled well by
-        # GZIP, and there are no further patterns to discover in our
-        # noisy data.
+        # The data are noise-dominated 4+4-bit values. At σ ≈ 2.8 LSB
+        # their entropy is ≈ 6.96 bits per byte, so no lossless
+        # compressor can do better than ≈ 87%. Measured on cx67 for
+        # CHORD-like data (512 dishes, 8 MB chunks; uncompressed
+        # writes run at ≈ 2000 MB/s):
         #
-        # This filter is slow and does not compress well:
-        # filters = BitshuffleFilter(; compressor=:zstd, comp_level=3)
-        # This filter is fast but does not compress well:
-        filters = BitshuffleFilter(; compressor=:lz4, comp_level=1)
-        # This filter is slow but good:
-        # filters = HDF5.Filters.Deflate(4)
-        # This filter is untested:
-        # ??? filters = Lz4Filter()
+        #     filter                size     write MB/s
+        #     zstd 1 (chosen)       87.5%     565
+        #     zstd 3, 6, 9          87.5%     470-550
+        #     deflate 1-9           88-89%    31-34
+        #     bzip2 9               91.5%     14
+        #     lz4                  100.0%     636
+        #     bitshuffle+lz4       100.5%     682
+        #     bitshuffle+zstd      100.2%     414
+        #
+        # Bitshuffle separates the bits of each 4-bit value, which
+        # destroys the structure an entropy coder needs. kotekan reads
+        # zstd (filter 32015) through `hdf5plugin`'s `libh5zstd.so`.
+        filters = ZstdFilter(1)
         println("    HDF5 dataset size is $datasetsize ($(prod(datasetsize)÷1000000000) GB)")
         println("    HDF5 chunk size is $chunksize ($(prod(chunksize)÷1000000) MB)")
         dataset = create_dataset(h5file, "voltage", UInt8, datasetsize; dapl=dapl, chunk=chunksize, filters=filters)
@@ -911,14 +917,20 @@ function fengine(
             # Output
             println("    Writing to file...")
             t0 = time()
-            xdata::AbstractArray{Int4x2}
+            xdata::Array{Int4x2,4}
             if input_reorder !== nothing
                 xdata = reshape(xdata, (ndishes * npolrs, nfreqs, :))
                 xdata′ = copy(xdata)
                 xdata[input_reorder .+ 1, :, :] = xdata′
                 xdata = reshape(xdata, (ndishes, npolrs, nfreqs, :))
             end
-            dataset[:, :, :, (time0 + 1):(time0 + ntimes_chunksize)] = reinterpret(UInt8, xdata)
+            # Hand HDF5 a plain `Array{UInt8}` that aliases `xdata`. A
+            # `reinterpret` array is not contiguous memory to HDF5.jl,
+            # which then copies it element by element (5× slower).
+            GC.@preserve xdata begin
+                xbytes = unsafe_wrap(Array, Ptr{UInt8}(pointer(xdata)), size(xdata))
+                dataset[:, :, :, (time0 + 1):(time0 + ntimes_chunksize)] = xbytes
+            end
             flush(dataset)
             t1 = time()
             filetime = t1 - t0

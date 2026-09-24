@@ -107,7 +107,12 @@ noise by `1/sqrt(1 + r)`. For example:
 
 The dataset is `voltage`, `UInt8`. Julia size is `(ndishes, 2, nfreqs, ntimes)`, which is
 C order `[T, F, P, D]`. It is chunked `(ndishes, 2, 1, ≤ntimes_chunksize)` and filtered
-with bitshuffle+lz4. Its attributes follow CHORD metadata version 2.0: `name`, `type`,
+with zstd level 1 (HDF5 filter 32015). kotekan reads it through `hdf5plugin`'s `libh5zstd.so`.
+
+The data are noise at σ ≈ 2.8 LSB, with an entropy of ≈ 6.96 bits per byte, so no lossless
+filter can get below ≈ 87%. zstd reaches 87.5% at about 550 MB/s. Bitshuffle (in either
+form) and lz4 stay at 100%, and deflate reaches 88% but only at about 30 MB/s. The benchmark
+is in the comment above `filters =` in `fengine`. Its attributes follow CHORD metadata version 2.0: `name`, `type`,
 `dim_names`, `dim_scalings`, `coarse_freq`, `freq_upchan_factor`, `freq_upchan_index`,
 `time_downsampling_fpga`, `fpga_seq_num`, `seq_length_nsec`, `num_polarizations`,
 `num_dishes`, `grid_size_x/y`, `feed_separation_x/y_m`, `dish_grid_indices`.
