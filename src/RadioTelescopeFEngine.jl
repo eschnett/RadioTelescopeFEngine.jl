@@ -55,9 +55,25 @@ function calc_field(noise::Noise{T}, ::Int, ::T) where {T<:Real}
     return (noise.A * rand(T))::T
 end
 
+export noise_rms
+"""
+    noise_rms(noise::Noise)
+
+Root-mean-square of the receiver noise per ADC sample. `Noise` draws uniformly from `[0, A)`,
+so this is `A/√12`.
+"""
+noise_rms(noise::Noise{T}) where {T<:Real} = noise.A / sqrt(T(12))
+
 ########################################
 
 export MonochromaticSource
+"""
+    MonochromaticSource{T}(f, A, angle_x, angle_y)
+
+A continuous-wave tone `A[polr] * sin(2π f (t - τ))` [`f` in Hz] arriving from direction
+`(angle_x, angle_y)` [rad] with geometric delay `τ`. It is added in the PFB domain, see
+`ToneResponse`.
+"""
 struct MonochromaticSource{T} <: AbstractSource{T}
     f::T                        # [Hz]
     A::NTuple{2,T}              # both polarizations
@@ -65,8 +81,40 @@ struct MonochromaticSource{T} <: AbstractSource{T}
     angle_y::T                  # [rad]
 end
 
-function calc_field(source::MonochromaticSource{T}, polr::Int, t::T) where {T<:Real}
-    return (source.A[polr] * sinpi(2 * source.f * t))::T
+########################################
+
+export NoiseSource
+"""
+    NoiseSource{T}(A, angle_x, angle_y)
+
+A broadband, noise-like point source (a radio galaxy, a supernova remnant, the Sun). Its
+electric field is white Gaussian noise with rms `A[polr]` per ADC sample, independent between
+the two polarizations (i.e. unpolarized when both amplitudes are equal), and it reaches each
+dish with its geometric delay from direction `(angle_x, angle_y)` [rad].
+
+Because the source and the receiver noise pass through the same PFB, the source-to-noise power
+ratio per dish and channel is `(A[polr] / noise_rms(noise))^2`. For example, Cygnus A at the
+centre of a CHORD dish's beam has a ratio of about 0.3.
+
+One realization per polarization is channelized and shared by all dishes. The delay is then
+applied per channel as the phase `exp(-2πi f_channel τ)`. This narrowband approximation is
+accurate for `|τ| ≪ 1/Δf_channel` (5.12 µs for CHORD, 2.56 µs for CHIME). The delay also
+shifts the signal within each PFB window, which the phase does not capture. Measured
+correlation with an exact delay (the reference dish is `Dish(0, 0)`, where `τ = 0`):
+
+| τ       | CHORD  | CHIME  |
+|---------|--------|--------|
+| 100 ns  | 0.9994 | 0.9977 |
+| 300 ns  | 0.995  | 0.980  |
+| 1000 ns | 0.945  | 0.794  |
+
+For comparison, CHIME's north-south extent (78 m) gives τ ≈ 225 ns at 60° from zenith, and
+CHORD's (178 m) gives τ ≈ 300 ns at 30°.
+"""
+struct NoiseSource{T} <: AbstractSource{T}
+    A::NTuple{2,T}              # [rms per ADC sample], both polarizations
+    angle_x::T                  # [rad]
+    angle_y::T                  # [rad]
 end
 
 ########################################
@@ -228,35 +276,15 @@ struct ADCFrame{T}
     data::Vector{T}             # [sample]
 end
 
+# Receiver noise and FRB. Tones and noise sources are added after the PFB.
 function adc_sample!(
-    adcframe::ADCFrame{T},
-    noise::Noise{T},
-    sources::Vector{MonochromaticSource{T}},
-    frb_samples::Vector{T},
-    dishgrid::DishGrid{T},
-    dish::Dish,
-    polr::Int,
-    adc::ADC{T},
-    sample0::Int,
-    nsamples::Int,
+    adcframe::ADCFrame{T}, noise::Noise{T}, frb_samples::Vector{T}, polr::Int, adc::ADC{T}, sample0::Int, nsamples::Int
 ) where {T<:Real}
-    nsources = length(sources)
-
     data = adcframe.data
     @assert length(data) == nsamples
     for sample in 1:nsamples
         t = adc.t₀ + (sample0 + sample - 1) * adc.Δt
-
-        E = zero(T)
-
-        E += calc_field(noise, polr, t)
-
-        for source in 1:nsources
-            t′ = t - calc_delay(dishgrid, dish, sources[source])
-            E += calc_field(sources[source], polr, t′)
-        end
-
-        data[sample] = E
+        data[sample] = calc_field(noise, polr, t)
     end
 
     if !isempty(frb_samples)
@@ -356,50 +384,148 @@ function channelize(data::AbstractVector{T}, ntaps::Int, nsamples::Int) where {T
     return output[begin:ntaps:end, :]
 end
 
-function channelize!(fframe::FFrame{T}, adc::ADC{T}, pfb::PFB, adcframe::ADCFrame{T}) where {T<:Real}
+# Window, FFT plan and work arrays for the PFB. Not thread-safe; each task needs its own.
+struct PFBWorkspace{T,P}
+    window::Vector{T}           # [sample], includes the 1/(nsamples/2) normalization
+    indata::Vector{T}           # [sample]
+    outdata::Vector{Complex{T}} # [ntaps * channel]
+    plan::P
+end
+
+function PFBWorkspace{T}(pfb::PFB) where {T<:Real}
     ntaps = pfb.ntaps
     nsamples = pfb.nsamples
-    frequency_channels = pfb.frequency_channels
-    @assert ntaps > 0
-    @assert nsamples > 0
+    window = T[sinc_hanning(T, sample - 1, ntaps, nsamples) / (nsamples ÷ 2) for sample in 1:(ntaps * nsamples)]
+    indata = Array{T}(undef, ntaps * nsamples)
+    outdata = Array{Complex{T}}(undef, ntaps * nsamples ÷ 2 + 1)
+    plan = plan_rfft(indata, 1)
+    return PFBWorkspace{T,typeof(plan)}(window, indata, outdata, plan)
+end
 
-    # t₀ = adc.t₀
-    # Δt = adc.Δt
+# One PFB output frame from `ntaps * nsamples` input samples
+function pfb_frame!(out::AbstractVector{Complex{T}}, ws::PFBWorkspace{T}, pfb::PFB, samples::AbstractVector{T}) where {T<:Real}
+    @assert length(samples) == pfb.ntaps * pfb.nsamples
+    @assert length(out) == length(pfb.frequency_channels)
+    ws.indata .= ws.window .* samples
+    mul!(ws.outdata, ws.plan, ws.indata)
+    for (freq, channel) in enumerate(pfb.frequency_channels)
+        # Choose only every ntap-th frequency
+        out[freq] = ws.outdata[pfb.ntaps * channel + 1]
+    end
+    return out
+end
+
+function channelize!(fframe::FFrame{T}, ws::PFBWorkspace{T}, pfb::PFB, adcframe::ADCFrame{T}) where {T<:Real}
+    ntaps = pfb.ntaps
+    nsamples = pfb.nsamples
+
     ntimes = length(adcframe.data)
     @assert ntimes % nsamples == 0
 
     ntimes′ = max(0, ntimes ÷ nsamples - pfb.ntaps + 1)
 
-    window = T[sinc_hanning(T, sample - 1, ntaps, nsamples) for sample in 1:(ntaps * nsamples)]
-
-    indata = Array{T}(undef, ntaps * nsamples)
-    outdata = Array{Complex{T}}(undef, ntaps * nsamples ÷ 2 + 1)
-    FFT = plan_rfft(indata, 1)
-
     fdata = fframe.data
-    @assert size(fdata) == (length(frequency_channels), ntimes′)
+    @assert size(fdata) == (length(pfb.frequency_channels), ntimes′)
     fdata .= 0.0/0.0
-    # fdata = Array{Complex{T}}(undef, length(frequency_channels), ntimes′)
     for time′ in 1:ntimes′
         time0 = (time′ - 1) * nsamples + 1
         time1 = time0 + ntaps * nsamples - 1
-
-        adcdata = @view adcframe.data[time0:time1]
-        for sample in 1:(ntaps * nsamples)
-            w = window[sample] / (nsamples ÷ 2)
-            indata[sample] = w * adcdata[sample]
-        end
-
-        mul!(outdata, FFT, indata)
-
-        data = @view fdata[:, time′]
-        for freq in 1:length(frequency_channels)
-            # Choose only every ntap-th frequency
-            data[freq] = outdata[ntaps * frequency_channels[freq] + 1]
-        end
+        pfb_frame!(view(fdata, :, time′), ws, pfb, view(adcframe.data, time0:time1))
     end
     @assert all(isfinite, fdata)
 
+    return fframe
+end
+
+################################################################################
+# F-engine: sources added in the PFB domain
+
+# The PFB is linear. The ADC sees a tone `sin(2π f (t - τ))` in frame `m` at
+# `t = tₘ + s Δt`, where `s` is the sample index within the PFB window.
+# That is `sin(ψₘ) cos(2π f s Δt) + cos(ψₘ) sin(2π f s Δt)` with
+# `ψₘ = 2π f (tₘ - τ)`, and its PFB output is `sin(ψₘ) C + cos(ψₘ) S`.
+# Here `C` and `S` are the PFB outputs for `cos(2π f s Δt)` and
+# `sin(2π f s Δt)`; they depend neither on the frame nor on the dish.
+struct ToneResponse{T}
+    source::MonochromaticSource{T}
+    C::Vector{Complex{T}}       # [freq]
+    S::Vector{Complex{T}}       # [freq]
+end
+
+function ToneResponse(ws::PFBWorkspace{T}, pfb::PFB, adc::ADC{T}, source::MonochromaticSource{T}) where {T<:Real}
+    nfreqs = length(pfb.frequency_channels)
+    # Double precision: `f s Δt` reaches `ntaps * nsamples / 2` cycles
+    f = Float64(source.f)
+    Δt = Float64(adc.Δt)
+    window_samples = 0:(pfb.ntaps * pfb.nsamples - 1)
+    C = pfb_frame!(Array{Complex{T}}(undef, nfreqs), ws, pfb, T[cospi(2 * f * s * Δt) for s in window_samples])
+    S = pfb_frame!(Array{Complex{T}}(undef, nfreqs), ws, pfb, T[sinpi(2 * f * s * Δt) for s in window_samples])
+    return ToneResponse{T}(source, C, S)
+end
+
+function add_tones!(
+    fframe::FFrame{T},
+    tones::Vector{ToneResponse{T}},
+    dishgrid::DishGrid{T},
+    dish::Dish,
+    polr::Int,
+    adc::ADC{T},
+    pfb::PFB,
+    sample0::Int,
+) where {T<:Real}
+    fdata = fframe.data
+    nfreqs, ntimes = size(fdata)
+    t₀ = Float64(adc.t₀)
+    Δt = Float64(adc.Δt)
+    for tone in tones
+        A = Float64(tone.source.A[polr])
+        iszero(A) && continue
+        f = Float64(tone.source.f)
+        τ = Float64(calc_delay(dishgrid, dish, tone.source))
+        C = tone.C
+        S = tone.S
+        for time in 1:ntimes
+            # Time of the first sample in this frame's PFB window
+            t = t₀ + (sample0 + (time - 1) * pfb.nsamples) * Δt
+            sinψ, cosψ = sincospi(2 * f * (t - τ))
+            a = T(A * sinψ)
+            b = T(A * cosψ)
+            @inbounds @simd for freq in 1:nfreqs
+                fdata[freq, time] += a * C[freq] + b * S[freq]
+            end
+        end
+    end
+    return fframe
+end
+
+# Channelize one realization of a noise source (for one polarization); it is shared by all dishes
+function noise_source_spectrum!(
+    fframe::FFrame{T}, ws::PFBWorkspace{T}, pfb::PFB, adcframe::ADCFrame{T}, source::NoiseSource{T}, polr::Int
+) where {T<:Real}
+    A = source.A[polr]
+    data = adcframe.data
+    for sample in eachindex(data)
+        data[sample] = A * randn(T)
+    end
+    return channelize!(fframe, ws, pfb, adcframe)
+end
+
+# Delay a channelized noise source to this dish (narrowband approximation, see `NoiseSource`)
+function add_noise_source!(
+    fframe::FFrame{T}, spectrum::FFrame{T}, dishgrid::DishGrid{T}, dish::Dish, source::NoiseSource{T}, adc::ADC{T}, pfb::PFB
+) where {T<:Real}
+    fdata = fframe.data
+    sdata = spectrum.data
+    @assert size(fdata) == size(sdata)
+    nfreqs, ntimes = size(fdata)
+    τ = Float64(calc_delay(dishgrid, dish, source))
+    Δf = 1 / (pfb.nsamples * Float64(adc.Δt))
+    phases = Complex{T}[cispi(-2 * channel * Δf * τ) for channel in pfb.frequency_channels]
+    for time in 1:ntimes
+        @inbounds @simd for freq in 1:nfreqs
+            fdata[freq, time] += phases[freq] * sdata[freq, time]
+        end
+    end
     return fframe
 end
 
@@ -548,7 +674,7 @@ end
 
 function fengine_calc(
     noise::Noise{T},
-    sources::Vector{MonochromaticSource{T}},
+    sources::AbstractVector{<:AbstractSource{T}},
     frb_sources::Vector{FRBSource{T}},
     dishgrid::DishGrid{T},
     dishes::Vector{Dish},
@@ -569,6 +695,28 @@ function fengine_calc(
         @assert length(Set(disharray)) == length(disharray)
     end
 
+    tone_sources = MonochromaticSource{T}[source for source in sources if source isa MonochromaticSource]
+    noise_sources = NoiseSource{T}[source for source in sources if source isa NoiseSource]
+    @assert length(tone_sources) + length(noise_sources) == length(sources) "sources must be MonochromaticSource or NoiseSource"
+
+    tones = let ws = PFBWorkspace{T}(pfb)
+        ToneResponse{T}[ToneResponse(ws, pfb, adc, source) for source in tone_sources]
+    end
+
+    # One realization per noise source and polarization, shared by all dishes
+    noise_spectra = [FFrame{T}(Array{Complex{T}}(undef, nfreqs, ntimes)) for source in noise_sources, polr in 1:npolrs]
+    if !isempty(noise_sources)
+        println("    Simulating noise sources...")
+        @sync for polr in 1:npolrs, (i, source) in enumerate(noise_sources)
+            iszero(source.A[polr]) && continue
+            Threads.@spawn begin
+                ws = PFBWorkspace{T}(pfb)
+                adcframe = ADCFrame{T}(Array{T}(undef, nsamples))
+                noise_source_spectrum!(noise_spectra[i, polr], ws, pfb, adcframe, source, polr)
+            end
+        end
+    end
+
     if !isempty(frb_sources)
         println("    Simulating FRBs...")
         frb_samples = [zeros(T, nsamples), zeros(T, nsamples)]
@@ -580,28 +728,35 @@ function fengine_calc(
     end
 
     println("    Simulating F-Engine...")
-    # Preallocate work arrays
-    nthreads() = Threads.nthreads(:default)
-    threadid() = Threads.threadid() - Threads.nthreads(:interactive)
-    adcframes = [ADCFrame{T}(Array{T}(undef, nsamples)) for thread in 1:nthreads()]
-    fframes = [FFrame{T}(Array{Complex{T}}(undef, nfreqs, ntimes)) for thread in 1:nthreads()]
-    iframes = [IFrame{T}(Array{Int4x2}(undef, nfreqs, ntimes)) for thread in 1:nthreads()]
     data = Array{Int4x2}(undef, nfreqs, ntimes, ndishes, npolrs)
-    @showprogress desc = "F-Engine" dt = 1 @threads for dish in 1:ndishes
-        for polr in 1:npolrs
-            # adcframe = ADCFrame{T}(Array{T}(undef, nsamples))
-            # fframe = FFrame{T}(Array{Complex{T}}(undef, nfreqs, ntimes))
-            # iframe = IFrame{T}(Array{Int4x2}(undef, nfreqs, ntimes))
-            adcframe = adcframes[threadid()]
-            fframe = fframes[threadid()]
-            iframe = iframes[threadid()]
-
-            adc_sample!(adcframe, noise, sources, frb_samples[polr], dishgrid, dishes[dish], polr, adc, sample0, nsamples)
-            channelize!(fframe, adc, pfb, adcframe)
-            quantize!(iframe, pfb, fframe)
-            data[:, :, dish, polr] .= iframe.data
+    progress = Progress(ndishes; desc="F-Engine", dt=1)
+    next_dish = Threads.Atomic{Int}(1)
+    @sync for task in 1:min(ndishes, Threads.nthreads(:default))
+        Threads.@spawn begin
+            # Work arrays belong to the task. Do not index shared buffers
+            # by `threadid()`: a task can move to another thread whenever
+            # it yields, e.g. while waiting for FFTW's planner lock.
+            ws = PFBWorkspace{T}(pfb)
+            adcframe = ADCFrame{T}(Array{T}(undef, nsamples))
+            fframe = FFrame{T}(Array{Complex{T}}(undef, nfreqs, ntimes))
+            iframe = IFrame{T}(Array{Int4x2}(undef, nfreqs, ntimes))
+            while (dish = Threads.atomic_add!(next_dish, 1)) <= ndishes
+                for polr in 1:npolrs
+                    adc_sample!(adcframe, noise, frb_samples[polr], polr, adc, sample0, nsamples)
+                    channelize!(fframe, ws, pfb, adcframe)
+                    add_tones!(fframe, tones, dishgrid, dishes[dish], polr, adc, pfb, sample0)
+                    for (i, source) in enumerate(noise_sources)
+                        iszero(source.A[polr]) && continue
+                        add_noise_source!(fframe, noise_spectra[i, polr], dishgrid, dishes[dish], source, adc, pfb)
+                    end
+                    quantize!(iframe, pfb, fframe)
+                    data[:, :, dish, polr] .= iframe.data
+                end
+                next!(progress)
+            end
         end
     end
+    finish!(progress)
     nbytes = sizeof(data)
     println("        Data size: $(Humanize.datasize(nbytes))")
 
@@ -628,7 +783,7 @@ export fengine
     function fengine(
         filename::AbstractString,
         noise::Noise{T},
-        sources::Vector{MonochromaticSource{T}},
+        sources::AbstractVector{<:AbstractSource{T}},
         frb_sources::Vector{FRBSource{T}},
         dishgrid::DishGrid{T},
         dishes::Vector{Dish},
@@ -644,7 +799,8 @@ Run the F-Engine simulator.
 
     - `filename`: Output file name (a HDF5 file)
     - `noise`: Describes the noise that should be added to each antenna
-    - `sources`: Describes a set (possibly empty) of monochromatic point sources
+    - `sources`: Describes a set (possibly empty) of point sources, either monochromatic (`MonochromaticSource`)
+      or broadband and noise-like (`NoiseSource`)
     - `frb_sources`: Describes a set (at most one) dispersed FRB
     - `dishgrid`: Spacing between dishes (antennae)
     - `dishes`: Set of dishes, located on integer grid positions
@@ -658,7 +814,7 @@ Run the F-Engine simulator.
 function fengine(
     filename::AbstractString,
     noise::Noise{T},
-    sources::Vector{MonochromaticSource{T}},
+    sources::AbstractVector{<:AbstractSource{T}},
     frb_sources::Vector{FRBSource{T}},
     dishgrid::DishGrid{T},
     dishes::Vector{Dish},
