@@ -27,7 +27,8 @@ sources = AbstractSource{T}[
     MonochromaticSource{T}(1384 * Δf, (1.0, 0.0), 0.0, 0.0),
     MonochromaticSource{T}(1480 * Δf, (1.0, 0.0), 0.0, 0.0),
     MonochromaticSource{T}(1576 * Δf, (1.0, 0.0), 0.0, 0.0),
-    MonochromaticSource{T}(1672 * Δf, (1.0, 0.0), 0.0, 0.0),
+    # The last channel in the band (1000:1671) that kotekan reads (it reads the even ones)
+    MonochromaticSource{T}(1670 * Δf, (1.0, 0.0), 0.0, 0.0),
     # Cyg A-like: broadband, unpolarized, slightly off zenith
     NoiseSource{T}(sqrt(cyga_snr) .* (noise_rms(noise), noise_rms(noise)), 0.02, 0.03),
 ]
