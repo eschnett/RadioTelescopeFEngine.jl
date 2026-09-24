@@ -14,15 +14,17 @@ how to work on the package.
 - `bin/chime_input_reorder.jl` — `(adc_id, chan_id, serial)` table copied from kotekan's
   `chime_science_run_gpu.yaml`.
 - `test/runtests.jl` — transpose; `channelize!` against a direct DFT; PFB-domain tones
-  against time-domain tones; `NoiseSource` calibration and delay sign; two small `fengine`
-  runs (not value-checked). About 2 minutes on cx67, mostly precompilation.
+  against time-domain tones; `NoiseSource` calibration and delay sign; a noise-free `fengine`
+  run whose file must equal `fengine_calc`'s output byte for byte (and be zstd-filtered); two
+  small `fengine` smoke runs. About 2 minutes on cx67, mostly precompilation.
 - `HIRAX` — a pasted log of an old cx67 run (file sizes, timings), not code.
 
 ## Running
 
-- The full setups need hundreds of GB of RAM and write 15–160 GB files. Run them on cx67
-  (2 TB RAM, 2×16-core Xeon, `nproc` = 48), with the output on local NVMe (`/scratch`), not NFS
-  (`/home` is NFS on cx67; `/data` does not exist there).
+- The full setups need hundreds of GB of RAM and write files from 25 GB (CHARTS) to 1.1 TB
+  (CHORD), after zstd. Run them on cx67 (2 TB RAM, 2×16-core Xeon, `nproc` = 48), with the
+  output on local NVMe (`/scratch`), not NFS (`/home` is NFS on cx67; `/data` does not exist
+  there). Check `df -h /scratch` before a CHORD run; 1.1 TB may not fit.
 - `julia -t auto --project=. bin/chord.jl`. The dish loop runs in tasks that own their work
   arrays; never index shared buffers by `threadid()` (tasks migrate when they yield, e.g.
   on FFTW's planner lock). FFTW itself runs single-threaded (`FFTW.get_num_threads() == 1`).
@@ -31,10 +33,11 @@ how to work on the package.
   `add_tones!` byte-identical to the time-domain path.
 - Sync to cx67 with `./copy-to-cx67.sh` (rsync, excludes `Manifest*.toml`, so the
   remote resolves its own versions).
-- On macOS with Julia 1.13 the package does not load with the committed Manifest: HDF5
-  0.17.2 pulls an MPICH_jll that does not know `MPIABI_jll`. Newer HDF5.jl (0.17.4) allows
-  newer MPI jlls, but `[compat]` pins HDF5 tightly, so widen it before `Pkg.update()`.
-  cx67 (Julia 1.12) works with the committed Manifest.
+- `Manifest.toml` is gitignored; versions are locked down only by `[compat]`. HDF5 must be
+  ≥ 0.17.4: 0.17.2 pulls an MPICH_jll that does not know `MPIABI_jll`, and the package then
+  fails to load on Julia 1.13. A local Manifest from before that bump still holds 0.17.2;
+  run `Pkg.update()` to refresh it. CI tests only Julia 1.11 and 1.12, so it will not catch
+  a 1.13-only failure.
 
 ## Conventions that kotekan depends on
 
