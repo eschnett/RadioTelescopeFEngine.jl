@@ -7,12 +7,19 @@ T = Float64
 adc_frequency = 1.6e+9     # [Hz]
 pfb_nsamples = 4096
 
-# Noise gets de-amplified by the FFT, so we choose a higher amplitude
-noise = Noise{T}(sqrt(1.0 * pfb_nsamples))
+# A Cyg A-like source. `cyga_snr` is its power relative to the receiver noise, per dish and
+# channel at the beam centre, i.e. S / SEFD:
+# One feed: A_eff ≈ 3 m² (a 20 m × 0.3 m strip of the cylinder), T_sys ≈ 50 K → SEFD ≈ 50 kJy.
+# Cyg A: ≈ 2.9 kJy at 600 MHz.
+cyga_snr = 0.06
+
+# Noise gets de-amplified by the FFT, so we choose a higher amplitude.
+# Reduce it so that noise plus Cyg A load the quantizer as noise alone would.
+noise = Noise{T}(sqrt(pfb_nsamples / (1 + cyga_snr)))
 
 # MonochromaticSource(f, A, angle_x, angle_y)
 Δf = adc_frequency / pfb_nsamples
-sources = [
+sources = AbstractSource{T}[
     MonochromaticSource{T}(1025 * Δf, (1.0, 0.0), 0.0, 0.0),
     MonochromaticSource{T}(1281 * Δf, (1.0, 0.0), 0.5 * 0.0227, 0.0),
     MonochromaticSource{T}(1345 * Δf, (1.0, 0.0), 1.0 * 0.0227, 0.0),
@@ -21,6 +28,8 @@ sources = [
     MonochromaticSource{T}(1601 * Δf, (1.0, 0.0), 0.0, 1.0 * 0.0491),
     MonochromaticSource{T}(1665 * Δf, (1.0, 0.0), 0.0, 2.0 * 0.0491),
     MonochromaticSource{T}(2048 * Δf, (1.0, 0.0), 0.0, 0.0),
+    # Cyg A-like: broadband, unpolarized, slightly off zenith
+    NoiseSource{T}(sqrt(cyga_snr) .* (noise_rms(noise), noise_rms(noise)), 0.02, 0.03),
 ]
 
 frb_sources = FRBSource{T}[]
