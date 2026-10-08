@@ -1,5 +1,20 @@
 # Taken from `chime_science_run_gpu.yaml`
 
+# fixed reorder from cylinder (chan_id) to beamformer order
+# cylinder order is pol 0 along a cylinder, then pol 1 along the same cylinder,
+# then the next cylinder
+function cylinder_to_beamformer_order(adc_ids::Vector{Int})
+  beam_ids = Int[]
+  for pol in 0:1
+    for dish in 0:1023
+      cyl_idx = (dish ÷ 256) * 512 + pol * 256 + (dish % 256)
+      push!(beam_ids, adc_ids[1+cyl_idx])
+    end
+  end
+  return beam_ids
+end
+
+
 # Information for input reordering, packed as
 #   (adc_id, chan_id, correlator_input)
 # The first is for the reordering, the last two are for making the index map

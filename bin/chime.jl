@@ -36,7 +36,7 @@ frb_sources = FRBSource{T}[]
 
 include("chime_input_reorder.jl")
 # This is the (0-based) ADC id for each channel
-input_reorder = Int[x[1] for x in input_reorder]
+input_reorder = cylinder_to_beamformer_order(Int[x[1] for x in input_reorder])
 
 dishgrid = DishGrid{T}(22.0, 0.3048)
 dishes = Dish[]
